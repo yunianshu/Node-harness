@@ -22,27 +22,16 @@ export interface HostEvent {
   [key: string]: unknown
 }
 
-export type PanelKind = 'progress' | 'project-list' | 'guidance'
-
-export interface PanelDefinition {
-  panelId: string
-  title: string
-  kind: PanelKind
-}
-
 export interface HostProvider {
   credentials: {
     put(meta: CredentialMeta, secret: string): Promise<CredentialHandle>
     get(handle: CredentialHandle): Promise<string>
-    mask(handle: CredentialHandle): string
+    mask(handle: CredentialHandle): Promise<string>
     list(): Promise<CredentialHandle[]>
     setEnabled(handle: CredentialHandle, enabled: boolean): Promise<CredentialHandle>
   }
   events: {
     publish<T extends HostEvent>(event: T): void
-  }
-  ui: {
-    registerPanel(panel: PanelDefinition): void
   }
   storage: {
     dataRoot(): Promise<string>

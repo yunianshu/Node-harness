@@ -30,9 +30,10 @@ export class OutlinerStage extends Stage<OutlinePromptInput, ChapterOutline> {
       throw new OutlineIncompleteError([`${schemaCheck.error.issues[0].path.join('.')}: ${schemaCheck.error.issues[0].message}`])
     }
     const structure = validateOutlineStructure(schemaCheck.data, input.locationNames, [])
-    if (!structure.ok) throw new OutlineIncompleteError(structure.problems)
+    if (!structure.ok || structure.value === null) throw new OutlineIncompleteError(structure.problems)
 
-    const outline = schemaCheck.data
+    // 使用地点引用归一后的章纲（「旧宅废墟」→「旧宅废墟（沈家老宅）」等）
+    const outline = structure.value
     const mode: 'first' | 'directed' | 'full-regen' = input.mode
     outline.rewriteTrace = [
       ...((input.previousOutline?.rewriteTrace ?? []).filter((t) => mode === 'directed')),

@@ -84,12 +84,11 @@ export class RegenOrchestrator {
       const release = await this.deps.acquireSlot(projectId, chapter, 'guidance')
       try {
         const wasIsolated = await this.deps.isIsolated(projectId, chapter)
+        // 先移出隔离再重生成：调度器跳过隔离章，若不先释放本章永远不会被尝试；
+        // 重生成失败时由调度器按连续失败/审查超限自然重新隔离
+        if (wasIsolated) await this.deps.releaseIsolation(projectId, chapter)
         const success = await this.deps.regenerateChapter(projectId, { chapter, stage: scope.kind, note, requestId })
-        let releasedFromIsolation = false
-        if (success && wasIsolated) {
-          await this.deps.releaseIsolation(projectId, chapter)
-          releasedFromIsolation = true
-        }
+        const releasedFromIsolation = wasIsolated && success
         results.push({
           chapter,
           stage: scope.kind,

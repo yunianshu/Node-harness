@@ -256,6 +256,8 @@ export class NovelHarnessApp {
     const paths = await this.pathsOf(projectId)
     const file = chapterFile(request.chapter)
     const project = await this.projects.loadProject(projectId)
+    // completed 为终态：局部重生成不做状态迁移，保持 completed（spec 六态语义）
+    const wasCompleted = project.status === 'completed'
 
     const backupFinal = async (): Promise<void> => {
       const finalPath = join(paths.chapters.final, `${file}.txt`)
@@ -277,7 +279,7 @@ export class NovelHarnessApp {
       }
     }
 
-    await this.projects.resume(projectId)
+    if (!wasCompleted) await this.projects.resume(projectId)
     const controller = new AbortController()
     this.running.set(projectId, controller)
     const summary = await this.scheduler.run(projectId, controller.signal).catch(() => null)
@@ -291,8 +293,7 @@ export class NovelHarnessApp {
     } else {
       await rm(join(paths.chapters.final, `${file}.regen-backup.txt`), { force: true })
     }
-    await this.projects.pause(projectId)
-    void project
+    if (!wasCompleted) await this.projects.pause(projectId)
     return success
   }
 }

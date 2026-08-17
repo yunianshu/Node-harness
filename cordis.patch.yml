@@ -1,0 +1,7 @@
+# novel-harness 组合包 patch：向 profile 组合树插入本插件。
+# 经 `dsh plugin --profile <name> add <本包路径>` 装载后，
+# 依赖 dsh-base 已装载的 commands/credentials 服务（inject 声明）。
+
+- insert:
+    - id: novel-harness
+      name: novel-harness

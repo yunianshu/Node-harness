@@ -186,7 +186,7 @@ export class PipelineScheduler {
     const isolated = isolation.list().map((i) => i.chapter)
     const aborted = signal.aborted
     if (!aborted && finalCount + isolated.length >= config.totalChapters) {
-      await this.deps.projectService.markComplete(projectId)
+      await this.markCompleteSafe(projectId)
     }
     this.deps.onEvent?.({
       type: 'pipeline.summary',
@@ -212,6 +212,14 @@ export class PipelineScheduler {
       await this.deps.projectService.markPlanningDone(projectId)
     } catch {
       /* resumed project may already be generating */
+    }
+  }
+
+  private async markCompleteSafe(projectId: string): Promise<void> {
+    try {
+      await this.deps.projectService.markComplete(projectId)
+    } catch {
+      /* completed 项目的局部重生成：状态已是终态，无需迁移 */
     }
   }
 

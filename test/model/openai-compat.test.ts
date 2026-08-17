@@ -102,3 +102,46 @@ describe('openai-compat adapter', () => {
     expect(seen.map((m) => m.role)).toEqual(['system', 'user'])
   })
 })
+describe('stripThink（推理模型内联思考段剥离）', () => {
+  it('removes a complete think block and keeps the answer', async () => {
+    const res = await chatCompletion(
+      { baseURL: 'http://mock/v1', apiKey: 'sk-test', model: 'MiniMax-M3', messages: [{ role: 'user', content: 'hi' }] },
+      async () => jsonResponse(200, {
+        choices: [{ message: { content: '<think>\n用户要求只回两个字。\n</think>\n\n可用' }, finish_reason: 'stop' }],
+        usage: null,
+      }),
+    )
+    expect(res.content).toBe('\n\n可用')
+  })
+
+  it('drops an unclosed think tail from a truncated stream', async () => {
+    const res = await chatCompletion(
+      { baseURL: 'http://mock/v1', apiKey: 'sk-test', model: 'MiniMax-M3', messages: [{ role: 'user', content: 'hi' }] },
+      async () => jsonResponse(200, {
+        choices: [{ message: { content: '答案在前<think>还没想完' }, finish_reason: 'length' }],
+        usage: null,
+      }),
+    )
+    expect(res.content).toBe('答案在前')
+  })
+
+  it('treats think-only output as empty response', async () => {
+    await expect(
+      chatCompletion(
+        { baseURL: 'http://mock/v1', apiKey: 'sk-test', model: 'MiniMax-M3', messages: [{ role: 'user', content: 'hi' }] },
+        async () => jsonResponse(200, {
+          choices: [{ message: { content: '<think>只有思考没有答案</think>' }, finish_reason: 'stop' }],
+          usage: null,
+        }),
+      ),
+    ).rejects.toBeInstanceOf(EmptyResponseError)
+  })
+
+  it('keeps content without think tags untouched', async () => {
+    const res = await chatCompletion(
+      { baseURL: 'http://mock/v1', apiKey: 'sk-test', model: 'deepseek-chat', messages: [{ role: 'user', content: 'hi' }] },
+      async () => jsonResponse(200, okBody),
+    )
+    expect(res.content).toBe('hello world')
+  })
+})

@@ -162,17 +162,20 @@ export function validateOutlineStructure(
   outline: unknown,
   locationNames: string[],
   knownForeshadowTitles: string[],
-): { ok: boolean; problems: string[] } {
+): { ok: boolean; problems: string[]; value: ChapterOutline | null } {
   const problems: string[] = []
   const parsed = ChapterOutlineSchema.safeParse(outline)
   if (!parsed.success) {
     problems.push(`章纲结构不合法：${parsed.error.issues[0].path.join('.')} ${parsed.error.issues[0].message}`)
-    return { ok: false, problems }
+    return { ok: false, problems, value: null }
   }
   const o = parsed.data
   for (const scene of o.scenes) {
-    if (!locationNames.includes(scene.locationRef)) {
-      problems.push(`场景 ${scene.seq} 地点「${scene.locationRef}」未在地点档案中`)
+    const resolved = resolveLocationName(scene.locationRef, locationNames)
+    if (resolved === null) {
+      problems.push(`场景 ${scene.seq} 地点「${scene.locationRef}」未在地点档案中（可用：${locationNames.join('、')}）`)
+    } else {
+      scene.locationRef = resolved
     }
   }
   if (o.foreshadowPlan.length > 0 && knownForeshadowTitles.length > 0) {
@@ -180,5 +183,22 @@ export function validateOutlineStructure(
       if (plan.matrixRef && !plan.title) problems.push('伏笔计划缺标题')
     }
   }
-  return { ok: problems.length === 0, problems }
+  return { ok: problems.length === 0, problems, value: o }
+}
+
+/** 剥离名称中的括号注释与空白，得到比对基名（「旧宅废墟（沈家老宅）」→「旧宅废墟」）。 */
+function locationBaseName(name: string): string {
+  return name.replace(/[（(][^（）()]*[)）]/g, '').replace(/\s+/g, '')
+}
+
+/**
+ * 解析章纲地点引用到地点档案名：精确命中 → 括号注释归一命中（唯一时）→ 无法解析。
+ * 模型间命名漂移（档案带注释、章纲省略注释）是常态，归一后回写规范名（spec 6.3 防的是悬空引用而非同义引用）。
+ */
+export function resolveLocationName(ref: string, knownNames: string[]): string | null {
+  if (knownNames.includes(ref)) return ref
+  const base = locationBaseName(ref)
+  const candidates = knownNames.filter((name) => locationBaseName(name) === base)
+  if (candidates.length === 1) return candidates[0]
+  return null
 }

@@ -2,3 +2,7 @@ node_modules/
 dist/
 coverage/
 *.log
+# dsh 上游源码快照（仅作参考，不属于本插件仓库）
+dsh-upstream/
+# 本地 dsh 装载验证用临时 home
+.tmp-dsh-home/

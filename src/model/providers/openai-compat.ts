@@ -94,7 +94,7 @@ export async function chatCompletion(req: ChatRequest, fetchImpl: FetchLike = fe
     throw new EmptyResponseError('响应不是合法 JSON')
   }
   const choice = (parsed as { choices?: Array<{ message?: { content?: string }; finish_reason?: string }> }).choices?.[0]
-  const content = choice?.message?.content
+  const content = stripThink(choice?.message?.content)
   if (typeof content !== 'string' || content.trim() === '') {
     throw new EmptyResponseError()
   }
@@ -105,6 +105,17 @@ export async function chatCompletion(req: ChatRequest, fetchImpl: FetchLike = fe
     usage: usage ? { promptTokens: usage.prompt_tokens ?? 0, completionTokens: usage.completion_tokens ?? 0 } : null,
     raw: parsed,
   }
+}
+
+/**
+ * 剥离推理模型内联输出中的思考段（如 MiniMax-M2 的 `<think>…</think>`）。
+ * 完整块整体移除；未闭合的截断尾巴（流式中断场景）从标签起一并丢弃。
+ */
+export function stripThink(content: string | undefined): string | undefined {
+  if (typeof content !== 'string') return content
+  return content
+    .replace(/<think>[\s\S]*?<\/think>/g, '')
+    .replace(/<think>[\s\S]*$/, '')
 }
 
 interface RequestSnapshot {

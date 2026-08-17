@@ -79,6 +79,7 @@ export class PromptBuilder {
     sections.push(`【世界观】\n${input.world.worldview}\n主题：${input.world.themes.join('、')}`)
     sections.push(`【角色档案】\n${input.charactersDigest}`)
     sections.push(`【地点档案】\n${input.locationsDigest}`)
+    sections.push(`【可用地点】场景 locationRef 只能逐字取自以下名称（含括号注释时须完整照抄）：${input.locationNames.join('、')}`)
     const injection = this.injectionSection(input.injection)
     if (injection) sections.push(injection)
     sections.push(this.styleSection(input.stylePack))
@@ -91,7 +92,7 @@ export class PromptBuilder {
       sections.push(`【全量重生成】原章纲未通过审查，丢弃原稿重新生成整份章纲。历史审查反馈供参考：${input.reviewFeedback ?? '（无）'}`)
     }
     sections.push(
-      '【输出要求】输出 JSON：{"chapter":章号,"title":"章节标题","summary":"摘要","keyEvents":["关键事件"],"scenes":[{"seq":序号,"locationRef":"地点档案名","timeAdvance":"时间推进","purpose":"场景功能","transition":"切换方式(可选)"}],"crossChapterHandoff":"跨章衔接说明(章末场景跳转时必填)","foreshadowPlan":[{"title":"伏笔标题","action":"planted|revealed"}]}。scene.locationRef 必须取自地点档案。',
+      '【输出要求】输出 JSON：{"chapter":章号,"title":"章节标题","summary":"摘要","keyEvents":["关键事件"],"scenes":[{"seq":序号,"locationRef":"地点档案名（逐字照抄【可用地点】之一）","timeAdvance":"时间推进","purpose":"场景功能","transition":"切换方式(可选)"}],"crossChapterHandoff":"跨章衔接说明(章末场景跳转时必填)","foreshadowPlan":[{"title":"伏笔标题","action":"planted|revealed"}]}。需要新地点时改用最接近的既有地点承载场景，不得虚构。',
     )
     return { system: sections.join('\n\n'), user: `生成第 ${input.chapter} 章章纲。` }
   }
