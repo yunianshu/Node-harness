@@ -19,7 +19,8 @@ if (!DEEPSEEK_KEY || !MINIMAX_KEY || !GLM_TOKEN) {
   process.exit(2)
 }
 
-const DATA_ROOT = join(homedir(), '.dsh', 'novels')
+// layout.projectPaths 会自行追加 novels 子目录，这里给到 .dsh 根
+const DATA_ROOT = join(homedir(), '.dsh')
 const OUT_DIR = 'D:/AiProject/novel-output'
 const STATE_FILE = join(OUT_DIR, 'current-project.json')
 const PROJECT_NAME = '雪夜刀声全本'

@@ -6,6 +6,7 @@
 import { NovelHarnessApp } from '../src/app.js'
 import { FakeHost } from '../src/host/dsh-adapter.js'
 import { readdir } from 'node:fs/promises'
+import { join } from 'node:path'
 
 const root = process.env.NOVEL_E2E_ROOT
 if (!root) {
@@ -26,7 +27,7 @@ await app.registerProvider({ providerId: 'deepseek', kind: 'openai-compat', base
 await app.registerProvider({ providerId: 'minimax', kind: 'openai-compat', baseURL: 'https://api.minimax.chat/v1', apiKey: MINIMAX_KEY!, qps: 1 })
 await app.registerProvider({ providerId: 'glm', kind: 'glm-plan-cn', baseURL: 'https://open.bigmodel.cn/api/coding/paas/v4', planToken: GLM_TOKEN!, channel: 'cn', qps: 1 })
 
-const novelsDir = `${root}/novels`
+const novelsDir = join(root, 'novels')
 const projectId = (await readdir(novelsDir))[0]!
 const before = await app.status(projectId)
 log(`重启恢复项目 ${projectId}：终稿 ${before.stages?.final?.done ?? 0}/${before.stages?.final?.total}，隔离 ${before.chapters?.filter((c: { isolated: boolean }) => c.isolated).length ?? 0} 章`)

@@ -17,7 +17,7 @@ import {
  * 全仓唯一允许依赖 dsh 底座具体 API 的文件（design 2.1.2 集成方式第 6 条）：
  * - 凭据 → ctx.credentials（POSIX 环境变量名式引用，按次解析不缓存）
  * - 事件 → cordis 事件总线的 novel/event 域
- * - 数据根目录 → $DSH_HOME/novels（dshHomePath 模式）
+ * - 数据根目录 → $DSH_HOME（layout.projectPaths 再追加 novels/）
  * 真实 dsh 无动态 UI 面板扩展点（web 为固定编译产物），
  * 进度呈现经 novel-* 命令与 webhook 通知（spec 5.7）落地。
  */
@@ -65,7 +65,8 @@ export class DshHostAdapter implements HostProvider {
     private readonly ctx: Context,
     options: DshHostAdapterOptions = {},
   ) {
-    this.rootDir = options.dataRoot ?? dshHomePath('novels')
+    // layout.projectPaths 会自行追加 novels 子目录，这里只给到 home 根
+    this.rootDir = options.dataRoot ?? dshHomePath()
     this.indexPath = join(this.rootDir, INDEX_FILE)
   }
 
