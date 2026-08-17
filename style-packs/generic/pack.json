@@ -1,0 +1,55 @@
+{
+  "packId": "generic",
+  "displayName": "通用叙事",
+  "environmentStrategy": "环境描写服务叙事节奏，重要场景可适度展开，过渡场景点到即止。",
+  "anchors": [
+    {
+      "anchorId": "narrative-drive",
+      "level": "core",
+      "rule": "每一场景必须有目标、有动作、有变化，禁止原地转圈。",
+      "violationExample": "两人坐着聊了一整段，谁也没动，事情没有任何推进。"
+    },
+    {
+      "anchorId": "fresh-push",
+      "level": "core",
+      "rule": "每段都要带来新东西——新事实、新动作、新例子或新后果，写过的不重复。",
+      "violationExample": "换个说法再次解释上一段已经讲清的设定。"
+    },
+    {
+      "anchorId": "plain-chinese",
+      "level": "core",
+      "rule": "白话打底，在意词序和停顿，清除报告腔、模型腔和翻案句。",
+      "violationExample": "「不是他不想去，而是他不能去。」"
+    },
+    {
+      "anchorId": "show-dont-tell",
+      "level": "secondary",
+      "rule": "情绪与性格优先用动作、对话与细节呈现，少下判断式断语。",
+      "violationExample": "「他很愤怒，非常愤怒。」"
+    }
+  ],
+  "exemplars": [
+    {
+      "plain": "他感到非常紧张，心跳加速。",
+      "styled": "他捏着茶杯，杯沿在指节间轻轻磕了一下。",
+      "note": "以动作代情绪标签"
+    },
+    {
+      "plain": "这个夜晚十分安静，让人感到孤独。",
+      "styled": "夜里只剩檐水声，一滴，又一滴。",
+      "note": "以具体声响写静"
+    },
+    {
+      "plain": "她是一个善良但倔强的人。",
+      "styled": "她把伞塞过来，自己顶着雨走了，头也不回。",
+      "note": "以行为立人设"
+    }
+  ],
+  "checklist": [
+    { "anchorId": "narrative-drive", "question": "本章每个场景是否都推进了情节或人物？" },
+    { "anchorId": "fresh-push", "question": "是否存在换说法重复解释既有内容？" },
+    { "anchorId": "plain-chinese", "question": "是否存在报告腔、模型腔或翻案句式？" },
+    { "anchorId": "show-dont-tell", "question": "情绪是否优先通过动作与细节呈现？" }
+  ],
+  "scopeNote": "通用叙事风格包适用于大多数现实与类型题材，为默认绑定项。"
+}
