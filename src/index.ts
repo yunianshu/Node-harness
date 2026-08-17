@@ -1,4 +1,5 @@
 import type { Context } from 'cordis'
+import { NovelHarnessApp } from './app.js'
 import { FakeHost, DshHostAdapter, DshHostRuntime } from './host/dsh-adapter.js'
 import type { HostProvider } from './host/types.js'
 
@@ -8,26 +9,31 @@ export interface PluginConfig {
   host?: HostProvider
   dshRuntime?: DshHostRuntime
   dataRoot?: string
+  stylePackRoot?: string
 }
 
 export const inject: string[] = []
 
 declare module 'cordis' {
   interface Context {
-    novelHost: HostProvider
+    novelApp: NovelHarnessApp
   }
 }
 
 export function apply(ctx: Context, config: PluginConfig = {}) {
-  const host = config.host ?? (config.dshRuntime ? new DshHostAdapter(config.dshRuntime) : new FakeHost(config.dataRoot))
-  ctx.novelHost = host
+  const app = new NovelHarnessApp({
+    host: config.host ?? (config.dshRuntime ? new DshHostAdapter(config.dshRuntime) : new FakeHost(config.dataRoot)),
+    dataRoot: config.dataRoot,
+    stylePackRoot: config.stylePackRoot,
+  })
+  ctx.novelApp = app
 
   ctx.on('dispose', () => {
-    if (ctx.novelHost === host) {
-      ;(ctx as { novelHost?: HostProvider }).novelHost = undefined
+    if (ctx.novelApp === app) {
+      ;(ctx as { novelApp?: NovelHarnessApp }).novelApp = undefined
     }
   })
 }
 
-export { FakeHost, DshHostAdapter }
+export { NovelHarnessApp, FakeHost, DshHostAdapter }
 export type { HostProvider, DshHostRuntime }

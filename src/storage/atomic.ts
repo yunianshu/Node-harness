@@ -6,11 +6,19 @@ export async function atomicWriteFile(absPath: string, content: string): Promise
   const dir = dirname(absPath)
   const tmpPath = join(dir, `.${randomUUID()}.tmp`)
   await writeFile(tmpPath, content, { encoding: 'utf-8', flag: 'wx' })
-  try {
-    await rename(tmpPath, absPath)
-  } catch (err) {
-    await unlink(tmpPath).catch(() => {})
-    throw err
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await rename(tmpPath, absPath)
+      return
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code
+      const transient = code === 'EPERM' || code === 'EACCES' || code === 'EEXIST'
+      if (attempt >= 5 || !transient) {
+        await unlink(tmpPath).catch(() => {})
+        throw err
+      }
+      await new Promise((r) => setTimeout(r, 5 * (attempt + 1)))
+    }
   }
 }
 
