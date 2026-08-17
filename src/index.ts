@@ -4,6 +4,7 @@ import { NovelHarnessApp, type CommandSpec } from './app.js'
 import { DshHostAdapter, FakeHost } from './host/dsh-adapter.js'
 import type { HostProvider } from './host/types.js'
 import { coerceFlags, commandNameOf, parseFlags, usageOf } from './command-line.js'
+import { attachProgressFeed, registerNovelSessionEvents, type SessionAppender } from './progress-feed.js'
 
 export const name = 'novel-harness'
 
@@ -34,6 +35,9 @@ declare module '@deepseek-ai/cordis' {
 /** 命中含密钥入参的命令：recordInput 关闭，避免密钥进入会话日志（spec 4.3.2）。 */
 const SECRET_INPUT_COMMANDS = new Set(['novel.admin.provider'])
 
+/** 启动/恢复/查询类命令：成功后把发起会话绑定为进度推送目标（status 查询顺带刷新实时卡片）。 */
+const FEED_COMMANDS = new Set(['novel.start', 'novel.resume', 'novel.regenerate', 'novel.guidance.regen', 'novel.status'])
+
 function renderResult(result: unknown): CommandResult {
   if (result === undefined || result === null) return { kind: 'success' }
   return {
@@ -43,11 +47,19 @@ function renderResult(result: unknown): CommandResult {
 }
 
 /** 解析 rawInput 并分发到共享服务层（命令行与 UI 调用同一入口，design 2.1.2 第 4 条）。 */
-async function dispatchCommand(app: NovelHarnessApp, spec: CommandSpec, invocation: CommandInvocation): Promise<CommandResult> {
+async function dispatchCommand(
+  app: NovelHarnessApp,
+  spec: CommandSpec,
+  invocation: CommandInvocation,
+  onFeed: (session: SessionAppender, projectId: string) => void,
+): Promise<CommandResult> {
   try {
     const flags = parseFlags(invocation.rawInput)
     const args = coerceFlags(spec, flags)
     const result = await app.executeCommand(spec.name, { ...args, operator: 'dsh-command' })
+    if (FEED_COMMANDS.has(spec.name) && typeof args.project === 'string' && args.project.length > 0) {
+      onFeed(invocation.agent.session as SessionAppender, args.project)
+    }
     return renderResult(result)
   } catch (err) {
     return {
@@ -58,6 +70,8 @@ async function dispatchCommand(app: NovelHarnessApp, spec: CommandSpec, invocati
 }
 
 export function apply(ctx: Context, config: PluginConfig = {}) {
+  // 启动即注册会话事件类型：会话回读可能先于任何 novel 命令发生
+  void registerNovelSessionEvents()
   const host = config.host ?? new DshHostAdapter(ctx, { dataRoot: config.dataRoot })
   const app = new NovelHarnessApp({
     host,
@@ -66,13 +80,26 @@ export function apply(ctx: Context, config: PluginConfig = {}) {
   })
   new NovelAppService(ctx, app)
 
+  /** 进度供给随插件 fiber 生命周期释放（会话级绑定在 attach 时登记）。 */
+  const detachFeeds = new Set<() => void>()
+  const onFeed = (session: SessionAppender, projectId: string): void => {
+    const detach = attachProgressFeed(app, session, projectId)
+    detachFeeds.add(detach)
+    ctx.effect(() => {
+      return () => {
+        detach()
+        detachFeeds.delete(detach)
+      }
+    })
+  }
+
   for (const spec of app.commands()) {
     ctx.commands.register({
       name: commandNameOf(spec.name),
       description: spec.description,
       input: { hint: usageOf(spec) },
       recordInput: !SECRET_INPUT_COMMANDS.has(spec.name),
-      handler: (invocation) => dispatchCommand(app, spec, invocation),
+      handler: (invocation) => dispatchCommand(app, spec, invocation, onFeed),
     })
   }
 }

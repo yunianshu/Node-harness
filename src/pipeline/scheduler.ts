@@ -92,7 +92,20 @@ export class PipelineScheduler {
     await matrix.load()
 
     if (!scan.hasPlanning) {
-      await this.runPlanning(ctx, paths, config, matrix)
+      try {
+        await this.runPlanning(ctx, paths, config, matrix)
+      } catch (err) {
+        // 规划补全 3 轮仍失败：暂停项目并告警（spec 5.3.3 场景 1），
+        // 不再让调度器静默吞错导致项目永久卡在 planning
+        this.deps.onEvent?.({ type: 'pipeline.error', projectId, stage: 'planning', message: err instanceof Error ? err.message : String(err) })
+        try {
+          await this.deps.projectService.pause(projectId)
+        } catch {
+          /* 可能已被并发暂停 */
+        }
+        await this.deps.projectService.releaseLock(projectId)
+        throw err
+      }
     }
 
     const runtimes = new Map<number, ChapterRuntime>()
@@ -242,12 +255,23 @@ export class PipelineScheduler {
   ): Promise<void> {
     const planner = new PlannerStage()
     const premise = await this.deps.projectService.readPremise(config.projectId)
+    // 补全循环（spec 5.3.1 规则 2 / 5.3.3 场景 1）：产物不完整不落盘，
+    // 携缺失清单重试；连续 3 次仍失败向上抛出，由 run() 暂停项目并告警
     let feedback: string[] = []
     for (let attempt = 0; attempt < 3; attempt++) {
-      const artifacts = await planner.execute(
-        { premise, repairFeedback: feedback, stylePackName: (await this.deps.stylePackLoader.load(config.stylePackId)).displayName },
-        ctx,
-      )
+      let artifacts: import('./schemas.js').PlanningArtifacts
+      try {
+        artifacts = await planner.execute(
+          { premise, repairFeedback: feedback, stylePackName: (await this.deps.stylePackLoader.load(config.stylePackId)).displayName },
+          ctx,
+        )
+      } catch (err) {
+        if (err instanceof PlannerIncompleteError) {
+          feedback = err.problems
+          continue
+        }
+        throw err
+      }
       await atomicWriteJson(paths.worldJson, artifacts.world)
       await atomicWriteJson(paths.charactersJson, artifacts.characters)
       await atomicWriteJson(paths.locationsJson, artifacts.locations)
@@ -256,7 +280,7 @@ export class PipelineScheduler {
       }
       return
     }
-    throw new Error('unreachable')
+    throw new Error(`规划阶段连续失败：${feedback.join('；')}`)
   }
 
   private async runOutlineLane(args: {
