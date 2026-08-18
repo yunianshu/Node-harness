@@ -95,7 +95,11 @@ describe('NovelProgressFeed（会话进度供给）', () => {
     const deadline = Date.now() + 60_000
     while (Date.now() < deadline) {
       const proj = await app.projects.loadProject(created.project.projectId)
-      if (proj.status === 'completed') break
+      const snapshots = session.events.filter((e) => e.type === 'novel/progress') as { data?: NovelProgressEventData }[]
+      const lastStatus = snapshots[snapshots.length - 1]?.data?.status
+      // 项目 completed 且快照也落地 completed 才退出：snapshot 是异步 append（fire-and-forget），
+      // 只等项目状态会读到旧帧（generating）造成竞态 flaky
+      if (proj.status === 'completed' && lastStatus === 'completed') break
       await new Promise((r) => setTimeout(r, 100))
     }
 

@@ -142,10 +142,7 @@ export function validatePlanningArtifacts(
   for (const c of characters.filter((x) => x.tier === '主角' || x.tier === '重要配角')) {
     for (const rel of c.relations) {
       const target = characters.find((x) => x.name === rel.target)
-      if (!target) {
-        problems.push(`角色「${c.name}」关系指向不存在的角色「${rel.target}」`)
-        continue
-      }
+      if (!target) continue // LLM 偶发把物件/地点写进关系（如「沈铁衣→黑棺」），指向不存在角色不阻断
       const back = target.relations.some((r) => r.target === c.name)
       if (!back) problems.push(`人物关系不双向闭合：「${c.name}」→「${rel.target}」缺反向关系`)
     }

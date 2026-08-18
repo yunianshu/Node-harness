@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ChapterOutlineSchema, resolveLocationName, validateOutlineStructure } from '../../src/pipeline/schemas'
+import { ChapterOutlineSchema, resolveLocationName, validateOutlineStructure, validatePlanningArtifacts } from '../../src/pipeline/schemas'
 
 const baseOutline = {
   chapter: 1,
@@ -64,5 +64,38 @@ describe('validateOutlineStructure（地点归一回写）', () => {
 describe('ChapterOutlineSchema 基线', () => {
   it('accepts a conforming outline', () => {
     expect(ChapterOutlineSchema.safeParse(baseOutline).success).toBe(true)
+  })
+})
+
+describe('validatePlanningArtifacts（关系校验宽容）', () => {
+  const valid = {
+    world: { worldview: '民国江湖', themes: ['复仇'], rules: [] },
+    characters: [
+      {
+        name: '沈铁衣', tier: '主角', surfaceIdentity: '镖师', trueCore: '执拗', coreDesire: '送棺',
+        relations: [{ target: '小满', relation: '师徒' }], narrativeFunction: '押棺人',
+      },
+      {
+        name: '小满', tier: '重要配角', surfaceIdentity: '学徒', trueCore: '忠诚', coreDesire: '继承',
+        relations: [{ target: '沈铁衣', relation: '师徒' }], narrativeFunction: '传灯',
+      },
+    ],
+    locations: [{ name: '官道', spatialFeatures: '荒漠', moodTone: '苍凉', relatedCharacters: ['沈铁衣'], narrativeFunction: '主线舞台' }],
+  }
+
+  it('LLM 把物件写进关系（target 不在角色清单）不再阻断', () => {
+    const artifacts = structuredClone(valid)
+    artifacts.characters[0].relations.push({ target: '黑棺', relation: '守护' })
+    const v = validatePlanningArtifacts(artifacts)
+    expect(v.ok).toBe(true)
+    expect(v.problems).toHaveLength(0)
+  })
+
+  it('已存在角色间的双向闭合缺口仍阻断', () => {
+    const artifacts = structuredClone(valid)
+    artifacts.characters[1].relations = [] // 删掉小满→沈铁衣，破坏反向
+    const v = validatePlanningArtifacts(artifacts)
+    expect(v.ok).toBe(false)
+    expect(v.problems.some((p) => p.includes('双向闭合'))).toBe(true)
   })
 })

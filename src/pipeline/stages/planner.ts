@@ -38,7 +38,7 @@ export class PlannerStage extends Stage<PlannerInput, PlanningArtifacts> {
         : ''
     return {
       system: `你是一部${input.stylePackName}风格长篇小说的规划师。基于故事前提产出三份档案。${repair}`,
-      user: `故事前提：\n${input.premise}\n\n输出 JSON：{"world":{"worldview":"世界观","themes":["主题"]},"characters":[{"name":"名字","tier":"主角|重要配角|次要配角|路人","surfaceIdentity":"表面身份","trueCore":"真实内核","coreDesire":"核心欲望","relations":[{"target":"对方名字","relation":"关系"}],"narrativeFunction":"叙事功能"}],"locations":[{"name":"地点名","spatialFeatures":"空间特征","moodTone":"氛围基调","relatedCharacters":["关联角色"],"narrativeFunction":"叙事功能"}]}\n要求：主角 1~3 人；主角与重要配角全字段；次要配角至少身份+主线关系；路人至少功能；人物关系双向闭合；地点覆盖前提中全部主要场景且必含氛围基调。`,
+      user: `故事前提：\n${input.premise}\n\n输出 JSON：{"world":{"worldview":"世界观","themes":["主题"]},"characters":[{"name":"名字","tier":"主角|重要配角|次要配角|路人","surfaceIdentity":"表面身份","trueCore":"真实内核","coreDesire":"核心欲望","relations":[{"target":"对方名字","relation":"关系"}],"narrativeFunction":"叙事功能"}],"locations":[{"name":"地点名","spatialFeatures":"空间特征","moodTone":"氛围基调","relatedCharacters":["关联角色"],"narrativeFunction":"叙事功能"}]}\n要求：主角 1~3 人；主角与重要配角全字段；次要配角至少身份+主线关系；路人至少功能；人物关系双向闭合；relations 的 target 只能逐字取自 characters 中已列出的角色名，不得把物件、地点、组织当关系对象（如「黑棺」这类物件不应出现在 relations 中）；地点覆盖前提中全部主要场景且必含氛围基调。`,
     }
   }
 
