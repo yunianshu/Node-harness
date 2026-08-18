@@ -495,6 +495,7 @@ export class PipelineScheduler {
           {
             chapter,
             draftText: draft,
+            version: Math.max(runtime.draftVersion, 1),
             outlineSummary: outline.summary,
             stylePack,
             gate: config.gates.draftGate,

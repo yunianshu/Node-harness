@@ -1,7 +1,7 @@
 /**
  * 引擎降底色对照样本生成（阶段1④）：
  * - 样本A：新引擎（节奏两级检查 + burstiness 提示约束 + 扩充词表），writer 温度 0.9，2 章
- * - 样本B：同引擎，writer 温度 1.05，1 章（温度 A/B）
+ * - 样本B：同引擎，writer 温度 0.95，1 章（温度 A/B；1.05 实测输出不稳——v3 混繁体、多轮字数超限被隔离，故降至 0.95）
  * 产出送 D:/AiProject/novel-output/检测样本/ 供朱雀/GPTZero 人工检测对比（基线：雪夜刀声全书 85%）。
  * 运行：三家密钥环境变量 npx tsx scripts/sample-humanize.mts
  */
@@ -90,7 +90,7 @@ const a = await runSample('A', 2, 0.9)
 await (await import('node:fs/promises')).writeFile(join(OUT_DIR, '样本A_新引擎_温度0.9_第1章.txt'), a[0], 'utf-8')
 await (await import('node:fs/promises')).writeFile(join(OUT_DIR, '样本A_新引擎_温度0.9_第2章.txt'), a[1], 'utf-8')
 
-const b = await runSample('B', 1, 1.05)
+const b = await runSample('B', 1, 0.95)
 await (await import('node:fs/promises')).writeFile(join(OUT_DIR, '样本B_新引擎_温度1.05_第1章.txt'), b[0], 'utf-8')
 
 log(`全部样本已导出：${OUT_DIR}`)

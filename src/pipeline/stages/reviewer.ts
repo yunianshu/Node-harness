@@ -10,6 +10,8 @@ import type { StylePack } from '../../quality/style-pack-loader.js'
 export interface ReviewerInput {
   chapter: number
   draftText: string
+  /** 被审查草稿的版本号（初稿 1，重写递增）；此前硬编码 1 导致所有审查 target 版本都标错。 */
+  version: number
   outlineSummary: string
   stylePack: StylePack
   gate: number
@@ -52,7 +54,7 @@ export class ReviewerStage extends Stage<ReviewerInput, ReviewerOutput> {
     const parsed = extractJsonLoose(response.content) as Record<string, unknown>
     const report = ReviewReportSchema.parse({
       ...parsed,
-      target: { kind: 'draft', chapter: input.chapter, version: 1 },
+      target: { kind: 'draft', chapter: input.chapter, version: input.version },
       reviewerModelMasked: 'reviewer',
     })
 
