@@ -55,7 +55,9 @@ async function runSample(label: string, chapters: number, temperature: number): 
       { role: 'planner', primary: { providerId: 'deepseek', model: 'deepseek-chat' }, fallbacks: [], temperature: 0.6, maxOutputTokens: 8192 },
       { role: 'outliner', primary: { providerId: 'deepseek', model: 'deepseek-chat' }, fallbacks: [], temperature: 0.7, maxOutputTokens: 8192 },
       { role: 'outline-reviewer', primary: { providerId: 'minimax', model: 'MiniMax-M3' }, fallbacks: [{ providerId: 'deepseek', model: 'deepseek-chat' }], temperature: 0.3, maxOutputTokens: 8192 },
-      { role: 'writer', primary: { providerId: 'glm', model: 'glm-5.3', accessMode: 'glm-plan-cn' }, fallbacks: [{ providerId: 'deepseek', model: 'deepseek-chat' }], temperature, maxOutputTokens: 8192 },
+      // glm-5.3 为推理模型：reasoning_content 与正文共享 maxOutputTokens，思考深时 8192 不够
+      // （实测 reasoning 6311 + 正文 1881 触发 length 截断），故 writer 放大到 16384 留足预算
+      { role: 'writer', primary: { providerId: 'glm', model: 'glm-5.3', accessMode: 'glm-plan-cn' }, fallbacks: [{ providerId: 'deepseek', model: 'deepseek-chat' }], temperature, maxOutputTokens: 16384 },
       { role: 'reviewer', primary: { providerId: 'minimax', model: 'MiniMax-M3' }, fallbacks: [{ providerId: 'deepseek', model: 'deepseek-chat' }], temperature: 0.3, maxOutputTokens: 8192 },
       { role: 'archivist', primary: { providerId: 'deepseek', model: 'deepseek-chat' }, fallbacks: [], temperature: 0.3, maxOutputTokens: 4096 },
     ],
