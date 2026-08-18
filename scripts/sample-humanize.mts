@@ -28,6 +28,13 @@ const OUT_DIR = 'D:/AiProject/novel-output/检测样本'
 const dataRoot = join(homedir(), '.dsh')
 
 async function runSample(label: string, chapters: number, temperature: number): Promise<string[]> {
+  // 清理同名旧项目（检测样本为一次性产物，重跑需全新生成）
+  const novelsRoot = join(dataRoot, 'novels')
+  for (const name of await readdir(novelsRoot).catch(() => [])) {
+    if (name.startsWith(`检测样本${label}`)) {
+      await rm(join(novelsRoot, name), { recursive: true, force: true })
+    }
+  }
   const app = new NovelHarnessApp({ dataRoot, host: new FakeHost(dataRoot) })
   await app.registerProvider({ providerId: 'deepseek', kind: 'openai-compat', baseURL: 'https://api.deepseek.com', apiKey: DEEPSEEK_KEY!, qps: 1 })
   await app.registerProvider({ providerId: 'minimax', kind: 'openai-compat', baseURL: 'https://api.minimax.chat/v1', apiKey: MINIMAX_KEY!, qps: 1 })
