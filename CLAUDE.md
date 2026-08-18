@@ -54,7 +54,7 @@ DEEPSEEK_API_KEY=... MINIMAX_API_KEY=... GLM_PLAN_TOKEN=... npx tsx scripts/e2e-
 - **model/**（模型接入）：`ModelGateway` 统一调用入口，按流水线角色（planner/outliner/outline-reviewer/writer/reviewer/archivist）绑定主模型+降级链；`ProviderRegistry` 管理服务商（openai-compat、glm-plan-cn/intl）与"接入方式↔端点↔凭据类型"三元匹配；`ChannelManager` 通道降级与限额冷却；`GlobalRateLimiter` 令牌桶。`openai-compat.ts` 的 `stripThink` 剥离推理模型内联 `<think>` 块（MiniMax-M3 实测必需）。
 - **project/**：zod schema（`ProjectConfig`/`ProjectCreateInput`）、`ProjectService`（创建/启停/重生成票）、六态状态机（pending→planning→generating⇄paused→completed/aborted）。
 - **pipeline/**：`PipelineScheduler` 主编排——断点续传（`ResumeScanner`）、隔离台账（`IsolationLedger`）、并发槽位（`ChapterSlotManager`）、章纲前瞻水位。阶段实现于 `stages/`，均继承 `Stage` 基类。
-- **quality/**：`checkDraft` = 结构化检查 + 去AI味七项硬检查（de-ai/ 子模块）。严重命中 → 直接重写。风格包从 `style-packs/<id>/pack.json` 装载（generic、gulong）。
+- **quality/**：`checkDraft` = 结构化检查 + 去AI味七项硬检查（de-ai/ 子模块）。**仅 severe 命中阻断送审**（general 转入反馈不否决）；字数超上限 ≤10% 记警告不阻断；「不是…而是…」客观对比为 general、认知翻案（你以为…其实/回头才发现/看似…实则等）为 severe。风格包从 `style-packs/<id>/pack.json` 装载（generic、gulong），可声明 `qualityOverrides.aiFlavorThresholds`（仅统计阈值放宽，古龙包放宽冒号/破折号密度；generic 保持基线）——spec 术语表"去AI味管底线质量、风格包管风格方向"的仲裁落地。
 - **memory/**：`MatrixStore` 六类条目（伏笔/意象/悬念/主题/角色状态/时空）、`extractor` 章后提取、`injection-builder` 注入摘要、`archivist` LLM 兜底提取。
 - **guidance/**：`GuidanceService`（暂停态附加意见）+ `RegenOrchestrator`（带终稿备份回滚的重生成）。
 - **notify/**：领域事件（发布到 cordis 总线 `novel/event` + webhook 聚合推送）、两级进度视图。
