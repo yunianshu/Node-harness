@@ -7,7 +7,7 @@
       "anchorId": "no-move-names",
       "level": "core",
       "rule": "不写招式写意境：武打不出现具体招式名称，用气势、后果与留白呈现。",
-      "violationExample": "「他使出一招『白鹤亮翅』，紧接着又是『黑虎掏心』。」"
+      "violationExample": "\"他使出一招'白鹤亮翅'，紧接着又是'黑虎掏心'。\""
     },
     {
       "anchorId": "short-dialogue",
@@ -19,7 +19,7 @@
       "anchorId": "weather-mood",
       "level": "core",
       "rule": "以气象写心境：环境描写与人物内心互为镜像，避免直陈情绪。",
-      "violationExample": "「他很难过。」（应改为风雪、灯火等意象承载）"
+      "violationExample": "\"他很难过。\"（应改为风雪、灯火等意象承载）"
     },
     {
       "anchorId": "rhythm-short-sentences",
@@ -42,7 +42,7 @@
     },
     {
       "plain": "他们两个人说了很久，商量了很多事情。",
-      "styled": "「来的是什么人？」\n「朋友。」\n「拿出你的刀，我就信。」",
+      "styled": "\"来的是什么人？\"\n\"朋友。\"\n\"拿出你的刀，我就信。\"",
       "note": "对话极简，机锋藏在试探里"
     },
     {

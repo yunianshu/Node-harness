@@ -19,13 +19,13 @@
       "anchorId": "plain-chinese",
       "level": "core",
       "rule": "白话打底，在意词序和停顿，清除报告腔、模型腔和翻案句。",
-      "violationExample": "「不是他不想去，而是他不能去。」"
+      "violationExample": "\"不是他不想去，而是他不能去。\""
     },
     {
       "anchorId": "show-dont-tell",
       "level": "secondary",
       "rule": "情绪与性格优先用动作、对话与细节呈现，少下判断式断语。",
-      "violationExample": "「他很愤怒，非常愤怒。」"
+      "violationExample": "\"他很愤怒，非常愤怒。\""
     }
   ],
   "exemplars": [
