@@ -75,7 +75,7 @@ export const AiFlavorThresholdsSchema = z.object({
   minParagraphLengthCVHard: z.number().min(0).max(3).default(0.3),
   maxConjunctionDensityPerKChar: z.number().positive().default(8),
   maxParallelismRuns: z.number().int().positive().default(2),
-  maxSimileDensityPerKChar: z.number().positive().default(3),
+  maxSimileDensityPerKChar: z.number().positive().default(4),
 })
 
 export const AiFlavorConfigSchema = z.object({

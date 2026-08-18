@@ -116,6 +116,25 @@ describe('de-ai checks', () => {
     expect(result.hits.some((h) => h.type === 'lyric-metaphor')).toBe(true)
   })
 
+  it('bare-像 similes trip density feedback (检测器覆盖裸像，非仅像…一样)', () => {
+    // 大量裸「像」比喻（无「一样/似的」尾词）：此前 simileRegex 只匹配「像…一样」全部漏检
+    const similes = ['风像一把刀。', '路像一条河。', '影子像一块墨。', '灯火像一只眼。', '灰尘像一层霜。']
+    // 填充句长短落差拉开（短句 6 字 ↔ 长句 70 字），避免段落节奏 CV 塌平误触 severe
+    const fillers = [
+      '风沙起来了。',
+      '他蹲下来掬了一捧水，水从指缝漏下去，凉意顺着腕子爬上肘弯，又在沙地上洇开一小片深色的印子，像是夜里的露水。',
+      '枯草压低了，石头缝里积着沙。',
+      '远处的土墙塌了半截，屋顶的瓦片缺了几块，门板上钉着铁皮，风一过就哐当作响，墙根下堆着柴火，井台边搁着半只破碗，碗里落了一层灰。',
+      '暮色压下来。',
+    ]
+    const body = Array.from({ length: 40 }, (_, i) => similes[i % similes.length] + fillers[i % fillers.length]).join('\n')
+    const result = runDeAiChecks(body, config)
+    const density = result.hits.find((h) => h.type === 'lyric-metaphor' && h.detail.kind === 'simile-density')
+    expect(density).toBeDefined()
+    expect(density?.severity).toBe('general')
+    expect(result.passed).toBe(true) // general 反馈不阻断
+  })
+
   it('foreign text hits severe (writer 混入英文污染)', () => {
     const text = '交换。\n\n没有任何言语。\n\ntransactions completed.\n\n那只手缩了回去，门关上了。'
     const result = runDeAiChecks(text, config)

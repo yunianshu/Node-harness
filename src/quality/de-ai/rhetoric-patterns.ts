@@ -51,7 +51,10 @@ export function detectLyricMetaphor(
 ): DeAiHit[] {
   const hits: DeAiHit[] = []
   const paragraphs = splitParagraphs(text)
-  const simileRegex = /像[^。！？\n]{1,20}(一样|一般|似的|那样|那样地)/g
+  // 裸「像」与「像…一样/似的」都算明喻：此前只匹配带尾词的「像…一样」，
+  // 漏掉全部裸「像」比喻（如「像两条干涸的河」），密度统计失真。
+  // 宁滥勿漏——本检查为 general 反馈层，不阻断，少量误报无害。
+  const simileRegex = /像[^。！？\n]{1,16}/g
   let abstractSimiles = 0
   let totalSimiles = 0
 
