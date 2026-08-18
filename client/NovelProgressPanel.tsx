@@ -5,12 +5,29 @@ interface PanelProps {
   readonly node: ChatNode<'novel-progress'>
 }
 
-/** 对话内小说进度卡片：进度条 + 计数 + 状态 + 隔离章 + 最近里程碑。 */
+/** 章内五步流水线（与进度视图 currentStage 推导一致）。 */
+const STEPS = ['章纲', '审查', '写作', '审稿', '终稿']
+
+/** currentStage → 步序（0 基；未知阶段归 0）。 */
+function stepIndexOf(stage: string): number {
+  switch (stage) {
+    case '章纲生成': return 0
+    case '章纲审查': return 1
+    case '正文写作': return 2
+    case '正文审查': return 3
+    case '已完成': return 4
+    default: return stage === '规划' ? 0 : 0
+  }
+}
+
+/** 对话内小说生成过程卡片：进度条 + 活跃章节环节步骤 + 最近过程时间线。 */
 export function NovelProgressPanel({ node }: PanelProps) {
   const d: NovelProgressEventData = node.data
   const total = d.totalChapters
   const pct = total > 0 ? Math.round((d.finalDone / total) * 100) : 0
   const running = d.status === 'generating' || d.status === 'planning'
+  const active = d.activeChapters ?? []
+  const recent = d.recent ?? []
   return (
     <div style={{
       border: '1px solid rgba(125,125,125,0.35)',
@@ -36,8 +53,46 @@ export function NovelProgressPanel({ node }: PanelProps) {
         <span>终稿 {d.finalDone}/{total}</span>
         {d.isolated.length > 0 && <span style={{ color: '#d97706' }}>隔离：第 {d.isolated.join(',')} 章</span>}
       </div>
+
+      {active.length > 0 && (
+        <div style={{ marginTop: 8 }}>
+          {active.map((c) => (
+            <div key={c.chapter} style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 3 }}>
+              <span style={{ minWidth: 52, opacity: 0.85 }}>第 {c.chapter} 章</span>
+              {STEPS.map((label, i) => (
+                <span key={label} style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+                  <span
+                    style={{
+                      width: 8,
+                      height: 8,
+                      borderRadius: '50%',
+                      display: 'inline-block',
+                      background: i < stepIndexOf(c.stage) ? '#22c55e' : i === stepIndexOf(c.stage) ? '#3b82f6' : 'rgba(125,125,125,0.35)',
+                      boxShadow: i === stepIndexOf(c.stage) && running ? '0 0 0 3px rgba(59,130,246,0.25)' : 'none',
+                    }}
+                  />
+                  <span style={{ fontSize: 11, opacity: i === stepIndexOf(c.stage) ? 1 : 0.55 }}>{label}</span>
+                </span>
+              ))}
+              <span style={{ marginLeft: 'auto', fontSize: 12, opacity: 0.8 }}>{c.stage}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {recent.length > 0 && (
+        <div style={{ marginTop: 8, paddingTop: 6, borderTop: '1px dashed rgba(125,125,125,0.35)' }}>
+          {recent.map((r, i) => (
+            <div key={`${r.time}-${i}`} style={{ display: 'flex', gap: 8, fontSize: 12, opacity: i === 0 ? 1 : 0.7 - i * 0.06 }}>
+              <span style={{ opacity: 0.7, fontVariantNumeric: 'tabular-nums' }}>{r.time}</span>
+              <span>{r.note}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
       {d.note !== undefined && (
-        <div style={{ marginTop: 4, opacity: 0.7, fontSize: 12 }}>{d.note} · {d.updatedAt.slice(11, 19)}</div>
+        <div style={{ marginTop: 4, opacity: 0.7, fontSize: 12 }}>{d.note}</div>
       )}
     </div>
   )

@@ -104,6 +104,10 @@ describe('NovelProgressFeed（会话进度供给）', () => {
     expect(last.status).toBe('completed')
     expect(last.finalDone).toBe(3)
     expect(last.totalChapters).toBe(3)
+    // 过程视图字段：步骤时间线随过程推进累积，终态无活跃章
+    expect(last.recent !== undefined && last.recent.length > 0).toBe(true)
+    expect(last.recent!.some((r) => r.note.includes('▸'))).toBe(true)
+    expect(last.activeChapters).toEqual([])
 
     // 重复 attach（如 status 查询重绑）：不再追加第二个 start，仅刷新快照
     const before = session.events.length

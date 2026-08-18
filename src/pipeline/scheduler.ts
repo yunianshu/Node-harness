@@ -324,6 +324,8 @@ export class PipelineScheduler {
       if (isolation.isIsolated(chapter)) continue
       const runtime = this.runtimeOf(runtimes, chapter)
       const locationNames = locations.map((l) => l.name)
+      // 章号注入阶段日志：供过程视图（novel/progress）按章呈现环节流转
+      const chapterCtx = { ...ctx, log: (e: StageLogEntry) => ctx.log({ ...e, chapter }) }
 
       let outline: ChapterOutline | null = null
       let passed = false
@@ -350,7 +352,7 @@ export class PipelineScheduler {
             reviewFeedback: feedback,
             stylePack,
           },
-          ctx,
+          chapterCtx,
         )
         await atomicWriteJson(join(paths.chapters.outline, `${chapterFile(chapter)}.json`), outline)
         this.ensureProgress(progress, chapter).outline = true
@@ -369,7 +371,7 @@ export class PipelineScheduler {
             stalledMysteryAlert: signals.stalledMysteryAlert,
             historyReports: history,
           },
-          ctx,
+          chapterCtx,
         )
         history.push(review.report)
         await atomicWriteJson(join(paths.chapters.outlineReview, `${chapterFile(chapter)}_review.json`), review.report)
@@ -458,6 +460,7 @@ export class PipelineScheduler {
     signal: AbortSignal
   }): Promise<void> {
     const { ctx, paths, config, stylePack, matrix, isolation, progress, runtimes, signal } = args
+    const chapterCtx = { ...ctx, log: (e: StageLogEntry) => ctx.log({ ...e, chapter }) }
     const writer = new WriterStage()
     const reviewer = new ReviewerStage()
     const runtime = this.runtimeOf(runtimes, chapter)
@@ -499,7 +502,7 @@ export class PipelineScheduler {
             previousSpacetime: matrix.current().spatiotemporalLatest,
             locationDigest: locationsDigest(locations),
           },
-          ctx,
+          chapterCtx,
         )
         runtime.reviewReports.push(review.report)
         await atomicWriteJson(join(paths.chapters.review, `${chapterFile(chapter)}_review.json`), review.report)
@@ -555,7 +558,7 @@ export class PipelineScheduler {
           stylePack,
           wordRange: { min: config.structured.minWords, max: config.structured.maxWords },
         },
-        ctx,
+        chapterCtx,
       )
       if (mode === 'directed') rewrites++
       runtime.draftVersion++

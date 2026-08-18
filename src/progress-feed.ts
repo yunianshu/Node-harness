@@ -17,6 +17,10 @@ export interface NovelProgressEventData {
   draftDone: number
   finalDone: number
   isolated: number[]
+  /** 活跃章节及当前环节（未完成未隔离，按章号升序，最多 8 条）。 */
+  activeChapters?: Array<{ chapter: number; stage: string }>
+  /** 最近过程事件（新→旧，最多 8 条）：呈现"章纲→审查→写作→审查→终稿"的步骤流转。 */
+  recent?: Array<{ time: string; note: string }>
   /** 本帧触发的里程碑说明（如「第 3 章终稿完成」）。 */
   note?: string
   updatedAt: string
@@ -30,7 +34,7 @@ export interface SessionAppender {
   append(type: 'novel/progress', data: NovelProgressEventData): unknown
 }
 
-/** 触发会话追加的里程碑事件类型（忽略高频 pipeline.log 防日志膨胀）。 */
+/** 触发会话追加的里程碑事件类型；pipeline.log 提供阶段级粒度驱动步骤流转。 */
 const MILESTONE_EVENTS = new Set([
   'chapter.final',
   'chapter.isolated',
@@ -38,7 +42,17 @@ const MILESTONE_EVENTS = new Set([
   'pipeline.summary',
   'pipeline.completed',
   'project.status',
+  'pipeline.log',
 ])
+
+const STAGE_LABELS: Record<string, string> = {
+  planner: '规划',
+  outliner: '章纲生成',
+  'outline-reviewer': '章纲审查',
+  writer: '正文写作',
+  reviewer: '正文审查',
+  archivist: '归档',
+}
 
 function milestoneNote(event: { type: string; [key: string]: unknown }): string | undefined {
   switch (event.type) {
@@ -50,6 +64,12 @@ function milestoneNote(event: { type: string; [key: string]: unknown }): string 
       return `模型降级：${String(event.detail ?? event.channel ?? '')}`.slice(0, 100)
     case 'pipeline.completed':
       return '全书生成完成'
+    case 'pipeline.log': {
+      const stage = STAGE_LABELS[String(event.stage)] ?? String(event.stage ?? '')
+      const chapter = typeof event.chapter === 'number' ? `第 ${event.chapter} 章 ` : ''
+      const failed = event.result === 'failed' ? '（失败重试）' : ''
+      return `${chapter}▸ ${stage}${failed}`
+    }
     case 'pipeline.summary':
       return undefined
     default:
@@ -61,13 +81,17 @@ interface StatusLike {
   projectId?: string
   projectStatus?: string
   stages?: { outline?: { done: number; total: number }; draft?: { done: number; total: number }; final?: { done: number; total: number } }
-  chapters?: Array<{ chapter: number; isolated: boolean }>
+  chapters?: Array<{ chapter: number; currentStage?: string; isolated: boolean }>
 }
+
+/** 最近过程事件保留条数（呈现步骤流转，新→旧）。 */
+const RECENT_LIMIT = 8
 
 async function snapshotOf(
   app: NovelHarnessApp,
   projectId: string,
   note?: string,
+  recent?: NovelProgressEventData['recent'],
 ): Promise<NovelProgressEventData | null> {
   const [project, status] = await Promise.all([
     app.projects.loadProject(projectId).catch(() => null),
@@ -75,6 +99,10 @@ async function snapshotOf(
   ])
   if (project === null || status === null) return null
   const s = status as StatusLike
+  const activeChapters = (s.chapters ?? [])
+    .filter((c) => !c.isolated && c.currentStage !== undefined && c.currentStage !== '已完成' && c.currentStage !== '已隔离')
+    .slice(0, 8)
+    .map((c) => ({ chapter: c.chapter, stage: c.currentStage! }))
   return {
     projectId,
     name: project.name,
@@ -84,6 +112,8 @@ async function snapshotOf(
     draftDone: s.stages?.draft?.done ?? 0,
     finalDone: s.stages?.final?.done ?? 0,
     isolated: (s.chapters ?? []).filter((c) => c.isolated).map((c) => c.chapter),
+    activeChapters,
+    recent,
     ...(note ? { note } : {}),
     updatedAt: new Date().toISOString(),
   }
@@ -123,6 +153,8 @@ export function attachProgressFeed(
   session: SessionAppender,
   projectId: string,
 ): () => void {
+  /** 过程时间线（新→旧）：随每帧快照下发，客户端呈现步骤流转。 */
+  let recent: Array<{ time: string; note: string }> = []
   const appendSnapshot = (data: NovelProgressEventData): void => {
     try {
       session.append('novel/progress', data)
@@ -131,7 +163,10 @@ export function attachProgressFeed(
     }
   }
   const push = (note?: string): void => {
-    void snapshotOf(app, projectId, note).then((snapshot) => {
+    if (note !== undefined) {
+      recent = [{ time: new Date().toISOString().slice(11, 19), note }, ...recent].slice(0, RECENT_LIMIT)
+    }
+    void snapshotOf(app, projectId, note, recent).then((snapshot) => {
       if (snapshot !== null) appendSnapshot(snapshot)
     })
   }
