@@ -47,9 +47,9 @@ const created = await app.projects.create({
   bindings: [
     { role: 'planner', primary: { providerId: 'deepseek', model: 'deepseek-chat' }, fallbacks: [], temperature: 0.6, maxOutputTokens: 8192 },
     { role: 'outliner', primary: { providerId: 'deepseek', model: 'deepseek-chat' }, fallbacks: [], temperature: 0.7, maxOutputTokens: 8192 },
-    { role: 'outline-reviewer', primary: { providerId: 'minimax', model: 'MiniMax-M3' }, fallbacks: [], temperature: 0.3, maxOutputTokens: 4096 },
+    { role: 'outline-reviewer', primary: { providerId: 'minimax', model: 'MiniMax-M3' }, fallbacks: [], temperature: 0.3, maxOutputTokens: 8192 },
     { role: 'writer', primary: { providerId: 'glm', model: 'glm-4.6', accessMode: 'glm-plan-cn' }, fallbacks: [{ providerId: 'deepseek', model: 'deepseek-chat' }], temperature: 0.9, maxOutputTokens: 8192 },
-    { role: 'reviewer', primary: { providerId: 'minimax', model: 'MiniMax-M3' }, fallbacks: [], temperature: 0.3, maxOutputTokens: 4096 },
+    { role: 'reviewer', primary: { providerId: 'minimax', model: 'MiniMax-M3' }, fallbacks: [], temperature: 0.3, maxOutputTokens: 8192 },
     { role: 'archivist', primary: { providerId: 'deepseek', model: 'deepseek-chat' }, fallbacks: [], temperature: 0.3, maxOutputTokens: 4096 },
   ],
 }, 'e2e-real')

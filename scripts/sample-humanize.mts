@@ -47,9 +47,9 @@ async function runSample(label: string, chapters: number, temperature: number): 
     bindings: [
       { role: 'planner', primary: { providerId: 'deepseek', model: 'deepseek-chat' }, fallbacks: [], temperature: 0.6, maxOutputTokens: 8192 },
       { role: 'outliner', primary: { providerId: 'deepseek', model: 'deepseek-chat' }, fallbacks: [], temperature: 0.7, maxOutputTokens: 8192 },
-      { role: 'outline-reviewer', primary: { providerId: 'minimax', model: 'MiniMax-M3' }, fallbacks: [{ providerId: 'deepseek', model: 'deepseek-chat' }], temperature: 0.3, maxOutputTokens: 4096 },
+      { role: 'outline-reviewer', primary: { providerId: 'minimax', model: 'MiniMax-M3' }, fallbacks: [{ providerId: 'deepseek', model: 'deepseek-chat' }], temperature: 0.3, maxOutputTokens: 8192 },
       { role: 'writer', primary: { providerId: 'glm', model: 'glm-5.3', accessMode: 'glm-plan-cn' }, fallbacks: [{ providerId: 'deepseek', model: 'deepseek-chat' }], temperature, maxOutputTokens: 8192 },
-      { role: 'reviewer', primary: { providerId: 'minimax', model: 'MiniMax-M3' }, fallbacks: [{ providerId: 'deepseek', model: 'deepseek-chat' }], temperature: 0.3, maxOutputTokens: 4096 },
+      { role: 'reviewer', primary: { providerId: 'minimax', model: 'MiniMax-M3' }, fallbacks: [{ providerId: 'deepseek', model: 'deepseek-chat' }], temperature: 0.3, maxOutputTokens: 8192 },
       { role: 'archivist', primary: { providerId: 'deepseek', model: 'deepseek-chat' }, fallbacks: [], temperature: 0.3, maxOutputTokens: 4096 },
     ],
   }, 'sample')
@@ -57,7 +57,7 @@ async function runSample(label: string, chapters: number, temperature: number): 
   log(`样本${label}（温度 ${temperature}，${chapters} 章）：${projectId}`)
   await app.startProject(projectId)
 
-  const deadline = Date.now() + 40 * 60 * 1000
+  const deadline = Date.now() + 90 * 60 * 1000
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 20_000))
     const proj = await app.projects.loadProject(projectId)

@@ -1,4 +1,5 @@
 import { Stage, StageContext } from './stage.js'
+import { invokeRetryOnTruncation } from './stage.js'
 import { ReviewReport, ReviewReportSchema } from '../schemas.js'
 import { extractJsonLoose } from './json-utils.js'
 import { PromptBuilder } from '../prompt-builder.js'
@@ -42,10 +43,12 @@ export class ReviewerStage extends Stage<ReviewerInput, ReviewerOutput> {
         ? `地点「${input.previousSpacetime.endScene.location}」，时间 ${input.previousSpacetime.timeline}`
         : null,
     })
-    const response = await ctx.gateway.invoke('reviewer', prompt, {
-      projectId: ctx.projectId,
-      chapter: input.chapter,
-    })
+    const response = await invokeRetryOnTruncation(() =>
+      ctx.gateway.invoke('reviewer', prompt, {
+        projectId: ctx.projectId,
+        chapter: input.chapter,
+      }),
+    )
     const parsed = extractJsonLoose(response.content) as Record<string, unknown>
     const report = ReviewReportSchema.parse({
       ...parsed,

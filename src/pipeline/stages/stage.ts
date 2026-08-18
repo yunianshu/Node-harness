@@ -1,4 +1,15 @@
 import type { ModelGateway } from '../../model/gateway.js'
+import type { ChatResponse } from '../../model/providers/openai-compat.js'
+
+/**
+ * 推理模型（如 MiniMax-M3）思考段可能挤占输出预算，导致 finish_reason=length
+ * 截断、JSON 未闭合无法解析。对截断结果重试一次（同 prompt 二次生成），期望本轮完整收尾。
+ */
+export async function invokeRetryOnTruncation(invoke: () => Promise<ChatResponse>): Promise<ChatResponse> {
+  const first = await invoke()
+  if (first.finishReason !== 'length') return first
+  return invoke()
+}
 
 export interface StageLogEntry {
   ts: string

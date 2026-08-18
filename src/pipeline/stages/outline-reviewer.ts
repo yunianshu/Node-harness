@@ -1,4 +1,4 @@
-import { Stage, StageContext } from './stage.js'
+import { Stage, StageContext, invokeRetryOnTruncation } from './stage.js'
 import { ReviewReport, ReviewReportSchema } from '../schemas.js'
 import { extractJsonLoose } from './json-utils.js'
 import { PromptBuilder } from '../prompt-builder.js'
@@ -45,10 +45,12 @@ export class OutlineReviewerStage extends Stage<OutlineReviewInput, OutlineRevie
       consistencySignalsDigest: signals.length > 0 ? signals.join('\n') : null,
       previousSpacetimeDigest: null,
     })
-    const response = await ctx.gateway.invoke('outline-reviewer', prompt, {
-      projectId: ctx.projectId,
-      chapter: input.chapter,
-    })
+    const response = await invokeRetryOnTruncation(() =>
+      ctx.gateway.invoke('outline-reviewer', prompt, {
+        projectId: ctx.projectId,
+        chapter: input.chapter,
+      }),
+    )
     const parsed = extractJsonLoose(response.content) as Record<string, unknown>
     const report = ReviewReportSchema.parse({
       ...parsed,
