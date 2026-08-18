@@ -86,12 +86,15 @@ async function runSample(label: string, chapters: number, temperature: number): 
 await rm(OUT_DIR, { recursive: true, force: true })
 await mkdir(OUT_DIR, { recursive: true })
 
-const a = await runSample('A', 2, 0.9)
-await (await import('node:fs/promises')).writeFile(join(OUT_DIR, '样本A_新引擎_温度0.9_第1章.txt'), a[0], 'utf-8')
-await (await import('node:fs/promises')).writeFile(join(OUT_DIR, '样本A_新引擎_温度0.9_第2章.txt'), a[1], 'utf-8')
+// 样本 A 已是新引擎产物时，可用 SAMPLE_ONLY_B=1 跳过重跑（省 API 调用）
+if (process.env.SAMPLE_ONLY_B !== '1') {
+  const a = await runSample('A', 2, 0.9)
+  await (await import('node:fs/promises')).writeFile(join(OUT_DIR, '样本A_新引擎_温度0.9_第1章.txt'), a[0], 'utf-8')
+  await (await import('node:fs/promises')).writeFile(join(OUT_DIR, '样本A_新引擎_温度0.9_第2章.txt'), a[1], 'utf-8')
+}
 
 const b = await runSample('B', 1, 0.95)
-await (await import('node:fs/promises')).writeFile(join(OUT_DIR, '样本B_新引擎_温度1.05_第1章.txt'), b[0], 'utf-8')
+await (await import('node:fs/promises')).writeFile(join(OUT_DIR, '样本B_新引擎_温度0.95_第1章.txt'), b[0], 'utf-8')
 
 log(`全部样本已导出：${OUT_DIR}`)
 process.exit(0)
