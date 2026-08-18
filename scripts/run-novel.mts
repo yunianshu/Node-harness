@@ -23,8 +23,10 @@ if (!DEEPSEEK_KEY || !MINIMAX_KEY || !GLM_TOKEN) {
 const DATA_ROOT = join(homedir(), '.dsh')
 const OUT_DIR = 'D:/AiProject/novel-output'
 const STATE_FILE = join(OUT_DIR, 'current-project.json')
-const PROJECT_NAME = '雪夜刀声全本'
-const TOTAL_CHAPTERS = 30
+const PROJECT_NAME = process.env.NOVEL_NAME ?? '雪夜刀声全本'
+const TOTAL_CHAPTERS = Number(process.env.NOVEL_CHAPTERS ?? 30)
+/** 风格包可选（generic/gulong，或 style-packs/ 下任意已装载包），缺省 generic */
+const STYLE_PACK = process.env.NOVEL_STYLE_PACK ?? 'generic'
 const POLL_MS = 60_000
 const DEADLINE_MS = 12 * 60 * 60 * 1000
 
@@ -61,7 +63,7 @@ async function resolveProjectId(): Promise<string> {
       '结局留白：真相大白之日，官府卷宗被焚，沈孤鸿放下刀，将断弦琴留在阿筝坟前，独自出城。',
     ].join(''),
     totalChapters: TOTAL_CHAPTERS,
-    stylePackId: 'gulong',
+    stylePackId: STYLE_PACK,
     gates: { outlineGate: 6.5, draftGate: 6.0 },
     bindings: [
       { role: 'planner', primary: { providerId: 'deepseek', model: 'deepseek-chat' }, fallbacks: [], temperature: 0.6, maxOutputTokens: 8192 },
