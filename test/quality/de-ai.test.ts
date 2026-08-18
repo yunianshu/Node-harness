@@ -116,6 +116,15 @@ describe('de-ai checks', () => {
     expect(result.hits.some((h) => h.type === 'lyric-metaphor')).toBe(true)
   })
 
+  it('foreign text hits severe (writer 混入英文污染)', () => {
+    const text = '交换。\n\n没有任何言语。\n\ntransactions completed.\n\n那只手缩了回去，门关上了。'
+    const result = runDeAiChecks(text, config)
+    const hit = result.hits.find((h) => h.type === 'foreign-text')
+    expect(hit).toBeDefined()
+    expect(hit?.severity).toBe('severe')
+    expect(result.passed).toBe(false)
+  })
+
   it('disabling a check suppresses its hits (spec 5.1.1 rule 5)', () => {
     const text = '在他看来，这场雨仿佛在诉说着什么。'
     const disabledConfig = AiFlavorConfigSchema.parse({ checks: { jargon: false } })

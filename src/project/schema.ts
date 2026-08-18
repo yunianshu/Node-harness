@@ -59,6 +59,7 @@ export const AiFlavorChecksSchema = z.object({
   conjunction: z.boolean().default(true),
   parallelism: z.boolean().default(true),
   lyricMetaphor: z.boolean().default(true),
+  foreignText: z.boolean().default(true),
 })
 
 export const AiFlavorThresholdsSchema = z.object({

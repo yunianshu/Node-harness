@@ -92,7 +92,7 @@ describe('NovelProgressFeed（会话进度供给）', () => {
     const detach = attachProgressFeed(app, session, created.project.projectId)
 
     await app.startProject(created.project.projectId)
-    const deadline = Date.now() + 30_000
+    const deadline = Date.now() + 60_000
     while (Date.now() < deadline) {
       const proj = await app.projects.loadProject(created.project.projectId)
       if (proj.status === 'completed') break

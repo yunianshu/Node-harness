@@ -5,6 +5,7 @@ import { detectPunctuation } from './punctuation.js'
 import { detectSentenceRhythm } from './sentence-rhythm.js'
 import { detectParagraphRhythm } from './paragraph-rhythm.js'
 import { detectConjunction } from './conjunction.js'
+import { detectForeignText } from './foreign-text.js'
 import { detectLyricMetaphor, detectParallelism } from './rhetoric-patterns.js'
 
 export type DeAiSeverity = 'severe' | 'general'
@@ -51,6 +52,7 @@ export function runDeAiChecks(text: string, config: AiFlavorConfig): DeAiCheckRe
   }
   if (checks.conjunction) hits.push(...detectConjunction(text, thresholds.maxConjunctionDensityPerKChar))
   if (checks.parallelism) hits.push(...detectParallelism(text, thresholds.maxParallelismRuns))
+  if (checks.foreignText) hits.push(...detectForeignText(text))
   if (checks.lyricMetaphor) {
     hits.push(...detectLyricMetaphor(text, { maxSimileDensityPerKChar: thresholds.maxSimileDensityPerKChar }))
   }
