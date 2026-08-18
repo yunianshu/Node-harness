@@ -71,6 +71,18 @@ export class PipelineScheduler {
     this.deps.gateway.setBindings(config.bindings)
 
     const stylePack = await this.deps.stylePackLoader.load(config.stylePackId)
+    // 应用风格包与去AI味层的边界协议：风格包声明的阈值覆盖并入本项目的
+    // 硬检查配置（generic 无声明即保持严格基线；spec 术语表的冲突仲裁条款落地）
+    const configWithPackOverrides: ProjectConfig = {
+      ...config,
+      aiFlavor: {
+        ...config.aiFlavor,
+        thresholds: {
+          ...config.aiFlavor.thresholds,
+          ...stylePack.qualityOverrides.aiFlavorThresholds,
+        },
+      },
+    }
     const scanner = new ResumeScanner({
       chaptersRoot: paths.chapters.root,
       planningFiles: {
@@ -124,7 +136,7 @@ export class PipelineScheduler {
           await this.processChapter(chapter, {
             ctx,
             paths,
-            config,
+            config: configWithPackOverrides,
             stylePack,
             matrix,
             isolation,
@@ -177,7 +189,7 @@ export class PipelineScheduler {
     const outlineLane = this.runOutlineLane({
       ctx,
       paths,
-      config,
+      config: configWithPackOverrides,
       stylePack,
       matrix,
       progress,

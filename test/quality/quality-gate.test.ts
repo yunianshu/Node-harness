@@ -21,12 +21,20 @@ describe('quality gate', () => {
     expect(outcome.rewriteReasons.some((r) => r.includes('AI味/severe'))).toBe(true)
   })
 
-  it('model score 9.0 with reversal sentence is rejected (spec 5.4.3 scenario 3)', () => {
-    const text = diverseParagraphText(16, 600) + '\n这不是结束，而是新的开始。'
+  it('model score 9.0 with severe reversal is rejected (spec 5.4.3 scenario 3)', () => {
+    const text = diverseParagraphText(16, 600) + '\n你以为他是刀客，其实他是杀手。'
     const draftCheck = checkDraft(text, { structured, aiFlavor })
     const v = verdict({ score: 9.0, styleDeviation: 'none' }, draftCheck, gates)
     expect(v.accepted).toBe(false)
     expect(v.reasons.some((r) => r.includes('reversal-sentence'))).toBe(true)
+  })
+
+  it('general-only reversal (contrast) no longer blocks a high-scored draft', () => {
+    const text = diverseParagraphText(16, 600) + '\n露出的不是银子，而是一排排步枪。'
+    const draftCheck = checkDraft(text, { structured, aiFlavor })
+    expect(draftCheck.passed).toBe(true)
+    const v = verdict({ score: 9.0, styleDeviation: 'none' }, draftCheck, gates)
+    expect(v.accepted).toBe(true)
   })
 
   it('score below gate is rejected even if hard checks pass', () => {

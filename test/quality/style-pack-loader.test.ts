@@ -56,3 +56,17 @@ describe('style pack loader', () => {
     await expect(loader.load('broken')).rejects.toThrow(/一一对应/)
   })
 })
+describe('风格包去AI味阈值覆盖（边界协议）', () => {
+  it('gulong pack declares punctuation relaxation and loads', async () => {
+    const loader = new StylePackLoader(join(process.cwd(), 'style-packs'))
+    const pack = await loader.load('gulong')
+    expect(pack.qualityOverrides.aiFlavorThresholds.maxColonDensityPerKChar).toBe(8)
+    expect(pack.qualityOverrides.aiFlavorThresholds.maxDashDensityPerKChar).toBe(8)
+  })
+
+  it('generic pack keeps strict baseline (no overrides)', async () => {
+    const loader = new StylePackLoader(join(process.cwd(), 'style-packs'))
+    const pack = await loader.load('generic')
+    expect(Object.keys(pack.qualityOverrides.aiFlavorThresholds)).toHaveLength(0)
+  })
+})

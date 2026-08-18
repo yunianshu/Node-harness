@@ -63,5 +63,11 @@
     { "anchorId": "rhythm-short-sentences", "question": "句子节奏是否有呼吸感？" },
     { "anchorId": "mystery-pose", "question": "重要人物出场是否保持神秘感？" }
   ],
-  "scopeNote": "源自参考项目 v2 工作流验证过的古龙风格约束，适用于武侠/浪人题材。"
+  "scopeNote": "源自参考项目 v2 工作流验证过的古龙风格约束，适用于武侠/浪人题材。",
+  "qualityOverrides": {
+    "aiFlavorThresholds": {
+      "maxColonDensityPerKChar": 8,
+      "maxDashDensityPerKChar": 8
+    }
+  }
 }

@@ -18,6 +18,11 @@ export interface DeAiHit {
 }
 
 export interface DeAiCheckResult {
+  /**
+   * 仅有 severe 命中才判不过（general 命中转入审查反馈扣分，不再一票否决；
+   * 历史语义 hits.length===0 曾使单条标点密度统计超标即整章重写，
+   * 与风格包方向系统性冲突，见 2026-08-17 三十章隔离分析）。
+   */
   passed: boolean
   hasSevere: boolean
   hits: DeAiHit[]
@@ -46,7 +51,7 @@ export function runDeAiChecks(text: string, config: AiFlavorConfig): DeAiCheckRe
 
   const hasSevere = hits.some((h) => h.severity === 'severe')
   return {
-    passed: hits.length === 0,
+    passed: !hasSevere,
     hasSevere,
     hits,
   }

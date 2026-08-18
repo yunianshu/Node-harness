@@ -15,6 +15,24 @@ export const StyleExemplarSchema = z.object({
   note: z.string().optional(),
 })
 
+/**
+ * 风格包与去AI味全局层的边界协议（spec 术语表："去AI味管底线质量、风格包管风格方向，
+ * 二者冲突时以此为界"）。风格包可声明阈值覆盖，仅放宽统计类密度/节奏阈值——
+ * 开关与 severe 级语义不可覆盖（底线质量不因风格让渡）。
+ */
+export const QualityOverridesSchema = z.object({
+  aiFlavorThresholds: z
+    .object({
+      maxColonDensityPerKChar: z.number().positive().optional(),
+      maxDashDensityPerKChar: z.number().positive().optional(),
+      minSentenceLengthCV: z.number().min(0).max(1).optional(),
+      maxConjunctionDensityPerKChar: z.number().positive().optional(),
+      maxParallelismRuns: z.number().int().positive().optional(),
+      maxSimileDensityPerKChar: z.number().positive().optional(),
+    })
+    .default({}),
+})
+
 export const StylePackSchema = z.object({
   packId: z.string().min(1),
   displayName: z.string().min(1),
@@ -23,6 +41,7 @@ export const StylePackSchema = z.object({
   exemplars: z.array(StyleExemplarSchema).min(3),
   checklist: z.array(z.object({ anchorId: z.string().min(1), question: z.string().min(1) })).min(1),
   scopeNote: z.string().default(''),
+  qualityOverrides: QualityOverridesSchema.default({}),
 })
 
 export type StylePack = z.infer<typeof StylePackSchema>

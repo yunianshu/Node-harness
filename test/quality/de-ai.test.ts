@@ -12,13 +12,35 @@ describe('de-ai checks', () => {
     expect(result.hits.filter((h) => h.severity === 'severe')).toHaveLength(0)
   })
 
-  it('reversal sentence patterns hit severe (spec 5.4.1 rule 2b)', () => {
+  it('cognitive reversal patterns hit severe while contrast is general (spec 5.4.1 rule 2b)', () => {
     const text = '你以为他是刀客，其实他是杀手。这不是结束，而是新的开始。回头才发现，一切都晚了。看似平静的湖面，实则暗流涌动。与其说是失误，不如说是背叛。'
     const result = runDeAiChecks(text, config)
     const reversal = result.hits.filter((h) => h.type === 'reversal-sentence')
     expect(reversal.length).toBeGreaterThanOrEqual(4)
-    expect(reversal.every((h) => h.severity === 'severe')).toBe(true)
+    // 认知翻案（立破/恍然类）保持 severe
+    const labels = reversal.filter((h) => h.severity === 'severe').map((h) => h.detail.pattern)
+    expect(labels).toContain('以为……其实……')
+    expect(labels).toContain('回头才发现')
+    expect(labels).toContain('看似……实则……')
+    expect(labels).toContain('与其说……不如说……')
+    // 「不是……而是……」客观对比降级 general（古龙式对比修辞，不再是硬阻断）
+    expect(reversal.some((h) => h.severity === 'general' && h.detail.pattern === '不是……而是……')).toBe(true)
     expect(result.hasSevere).toBe(true)
+  })
+
+  it('physical look-back action is not a reversal (回头看 误报修复)', () => {
+    const text = '走到门口时，他忽然停住，回头看了一眼那幅屏风。'
+    const result = runDeAiChecks(text, config)
+    expect(result.hits.filter((h) => h.type === 'reversal-sentence')).toHaveLength(0)
+  })
+
+  it('general-only hits no longer fail the gate (general 不一票否决)', () => {
+    const text = '灯亮了：他进门。刀出鞘：人倒下。灯又亮了：雪落了。' + '他又走了很远，夜色始终未散。'.repeat(40)
+    const result = runDeAiChecks(text, config)
+    expect(result.hits.length).toBeGreaterThanOrEqual(1)
+    expect(result.hits.every((h) => h.severity === 'general')).toBe(true)
+    expect(result.passed).toBe(true)
+    expect(result.hasSevere).toBe(false)
   })
 
   it('jargon words hit severe', () => {

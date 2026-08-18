@@ -56,3 +56,23 @@ describe('structured checker', () => {
     expect(result.failures.some((f) => f.type === 'paragraph-count')).toBe(true)
   })
 })
+
+describe('字数上限软容差（≤10% 记警告不阻断）', () => {
+  const cfg = { minWords: 2000, maxWords: 3000, hardFloorWords: 1500, minParagraphs: 15, maxDuplicateParagraphRatio: 0.25, maxSimilarParagraphRatio: 0.2, similarThreshold: 0.88 }
+  /** 构造恰好约 chars 个非空白字符、20 段互不相同的文本。 */
+  const build = (chars: number) =>
+    Array.from({ length: 20 }, (_, i) => `第${i}段` + '雪'.repeat(Math.ceil(chars / 20))).join('\n')
+
+  it('overshoot within 10% passes with warning', () => {
+    const r = checkStructured(build(3200), cfg)
+    expect(r.wordCount).toBeGreaterThan(3000)
+    expect(r.passed).toBe(true)
+    expect(r.warnings.some((w) => w.includes('容差'))).toBe(true)
+  })
+
+  it('overshoot beyond 10% still fails', () => {
+    const r = checkStructured(build(3400), cfg)
+    expect(r.passed).toBe(false)
+    expect(r.failures.some((f) => f.type === 'word-count' && f.message.includes('容差'))).toBe(true)
+  })
+})
