@@ -55,6 +55,7 @@ export const AiFlavorChecksSchema = z.object({
   jargon: z.boolean().default(true),
   punctuation: z.boolean().default(true),
   sentenceRhythm: z.boolean().default(true),
+  paragraphRhythm: z.boolean().default(true),
   conjunction: z.boolean().default(true),
   parallelism: z.boolean().default(true),
   lyricMetaphor: z.boolean().default(true),
@@ -63,7 +64,14 @@ export const AiFlavorChecksSchema = z.object({
 export const AiFlavorThresholdsSchema = z.object({
   maxColonDensityPerKChar: z.number().positive().default(3),
   maxDashDensityPerKChar: z.number().positive().default(3),
-  minSentenceLengthCV: z.number().min(0).max(2).default(0.35),
+  /** 句长变异系数软下限（burstiness 反馈线，低于此值进入重写反馈）。 */
+  minSentenceLengthCV: z.number().min(0).max(2).default(0.45),
+  /** 句长变异系数硬下限（分布塌平判 severe 阻断）。 */
+  minSentenceLengthCVHard: z.number().min(0).max(2).default(0.3),
+  /** 段落长度变异系数软下限（段落节奏反馈线）。 */
+  minParagraphLengthCV: z.number().min(0).max(3).default(0.55),
+  /** 段落长度变异系数硬下限（段落节奏塌平判 severe）。 */
+  minParagraphLengthCVHard: z.number().min(0).max(3).default(0.3),
   maxConjunctionDensityPerKChar: z.number().positive().default(8),
   maxParallelismRuns: z.number().int().positive().default(2),
   maxSimileDensityPerKChar: z.number().positive().default(3),

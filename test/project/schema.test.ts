@@ -42,7 +42,11 @@ describe('config schema', () => {
     const cfg = AiFlavorConfigSchema.parse({})
     expect(cfg.checks.reversalSentence).toBe(true)
     expect(cfg.checks.lyricMetaphor).toBe(true)
-    expect(cfg.thresholds.minSentenceLengthCV).toBe(0.35)
+    expect(cfg.thresholds.minSentenceLengthCV).toBe(0.45)
+    expect(cfg.thresholds.minSentenceLengthCVHard).toBe(0.3)
+    expect(cfg.thresholds.minParagraphLengthCV).toBe(0.55)
+    expect(cfg.thresholds.minParagraphLengthCVHard).toBe(0.3)
+    expect(cfg.checks.paragraphRhythm).toBe(true)
   })
 
   it('model binding validates temperature range and fallback threshold', () => {

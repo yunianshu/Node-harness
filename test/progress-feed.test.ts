@@ -14,7 +14,7 @@ import { attachProgressFeed, registerNovelSessionEvents } from '../src/progress-
 import type { NovelProgressEventData, SessionAppender } from '../src/progress-feed'
 import type { ModelGateway, LlmRequest, InvokeContext } from '../src/model/gateway'
 import type { PipelineRole } from '../src/project/schema'
-import { diverseParagraphText } from './helpers/text'
+import { diverseParagraphText, resetCounter } from './helpers/text'
 
 class RecordingSession implements SessionAppender {
   readonly events: { type: string; data?: unknown }[] = []
@@ -54,7 +54,11 @@ function makeGateway(): ModelGateway {
         }
       }
       if (role === 'outline-reviewer') return { content: JSON.stringify({ score: 9, issues: [], styleDeviation: 'none' }), finishReason: 'stop', usage: null, raw: {} }
-      if (role === 'writer') return { content: diverseParagraphText(18, 2200), finishReason: 'stop', usage: null, raw: {} }
+      if (role === 'writer') {
+        // 追加超长句段与单行段，确保句长/段长 CV 稳居硬阈值之上（避开节奏两级检查的 severe 档）
+        const longTail = '这一夜的风把整条长街吹得干干净净，雪粒子打在酒旗上啪啪作响，他数着更声一路走到城门口的时候，天边已经泛起一线灰白，城门还没有开，守门的老兵抱着枪在打盹。'.repeat(2)
+        return { content: diverseParagraphText(18, 2200) + '\n' + longTail + '\n他等着。', finishReason: 'stop', usage: null, raw: {} }
+      }
       return { content: JSON.stringify({ score: 8, issues: [], styleDeviation: 'none' }), finishReason: 'stop', usage: null, raw: {} }
     },
   }
@@ -65,6 +69,7 @@ describe('NovelProgressFeed（会话进度供给）', () => {
   let app: NovelHarnessApp
 
   beforeEach(async () => {
+    resetCounter()
     root = await mkdtemp(join(tmpdir(), 'progress-feed-'))
     app = new NovelHarnessApp({ dataRoot: root, host: new FakeHost(root), gateway: makeGateway() })
   })

@@ -3,6 +3,7 @@ import { detectReversalSentences } from './reversal-sentence.js'
 import { detectJargon } from './jargon.js'
 import { detectPunctuation } from './punctuation.js'
 import { detectSentenceRhythm } from './sentence-rhythm.js'
+import { detectParagraphRhythm } from './paragraph-rhythm.js'
 import { detectConjunction } from './conjunction.js'
 import { detectLyricMetaphor, detectParallelism } from './rhetoric-patterns.js'
 
@@ -42,7 +43,12 @@ export function runDeAiChecks(text: string, config: AiFlavorConfig): DeAiCheckRe
       }),
     )
   }
-  if (checks.sentenceRhythm) hits.push(...detectSentenceRhythm(text, thresholds.minSentenceLengthCV))
+  if (checks.sentenceRhythm) {
+    hits.push(...detectSentenceRhythm(text, thresholds.minSentenceLengthCV, thresholds.minSentenceLengthCVHard))
+  }
+  if (checks.paragraphRhythm) {
+    hits.push(...detectParagraphRhythm(text, thresholds.minParagraphLengthCV, thresholds.minParagraphLengthCVHard))
+  }
   if (checks.conjunction) hits.push(...detectConjunction(text, thresholds.maxConjunctionDensityPerKChar))
   if (checks.parallelism) hits.push(...detectParallelism(text, thresholds.maxParallelismRuns))
   if (checks.lyricMetaphor) {

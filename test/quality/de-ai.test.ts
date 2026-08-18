@@ -35,12 +35,39 @@ describe('de-ai checks', () => {
   })
 
   it('general-only hits no longer fail the gate (general 不一票否决)', () => {
-    const text = '灯亮了：他进门。刀出鞘：人倒下。灯又亮了：雪落了。' + '他又走了很远，夜色始终未散。'.repeat(40)
+    // 确定性构造句长 CV∈(0.30,0.45) 软档区间：长度模式 [5,9,13,7,11,6,10,14]×3
+    const lengths = [5, 9, 13, 7, 11, 6, 10, 14, 5, 9, 13, 7, 11, 6, 10, 14, 5, 9, 13, 7, 11, 6, 10, 14]
+    const sentences = lengths.map((n) => '雪'.repeat(n - 1) + '。')
+    const groups = [4, 1, 3, 2, 5, 2, 4, 3]
+    const paragraphs: string[] = []
+    let i = 0
+    for (const g of groups) {
+      paragraphs.push(sentences.slice(i, i + g).join(''))
+      i += g
+    }
+    const text = paragraphs.join('\n')
     const result = runDeAiChecks(text, config)
     expect(result.hits.length).toBeGreaterThanOrEqual(1)
     expect(result.hits.every((h) => h.severity === 'general')).toBe(true)
     expect(result.passed).toBe(true)
     expect(result.hasSevere).toBe(false)
+  })
+
+  it('sentence rhythm two-tier: below hard floor is severe, soft band is general', () => {
+    const flat = Array.from({ length: 12 }, () => '他慢慢地走向前方。').join('')
+    const severeResult = runDeAiChecks(flat, config)
+    const severeHit = severeResult.hits.find((h) => h.type === 'sentence-rhythm')
+    expect(severeHit?.severity).toBe('severe')
+    expect(severeResult.passed).toBe(false)
+  })
+
+  it('paragraph rhythm detects uniform paragraph lengths', () => {
+    const para = '灯亮了，他进门，刀出鞘，人倒下，雪又落了一层。'
+    const uniform = Array.from({ length: 10 }, () => para).join('\n')
+    const result = runDeAiChecks(uniform, config)
+    const hit = result.hits.find((h) => h.type === 'paragraph-rhythm')
+    expect(hit).toBeDefined()
+    expect(hit?.severity).toBe('severe')
   })
 
   it('jargon words hit severe', () => {
@@ -98,11 +125,11 @@ describe('de-ai checks', () => {
     expect(enabled.hits.some((h) => h.type === 'jargon')).toBe(true)
   })
 
-  it('threshold override changes outcome (lower CV limit lets uniform text pass)', () => {
+  it('threshold override changes outcome (lower CV limits let uniform text pass)', () => {
     const sentences = Array.from({ length: 15 }, () => '他慢慢地走向前方那座城。')
     const strict = runDeAiChecks(sentences.join(''), config)
     expect(strict.hits.some((h) => h.type === 'sentence-rhythm')).toBe(true)
-    const relaxed = AiFlavorConfigSchema.parse({ thresholds: { minSentenceLengthCV: 0 } })
+    const relaxed = AiFlavorConfigSchema.parse({ thresholds: { minSentenceLengthCV: 0, minSentenceLengthCVHard: 0, minParagraphLengthCV: 0, minParagraphLengthCVHard: 0 } })
     const relaxedResult = runDeAiChecks(sentences.join(''), relaxed)
     expect(relaxedResult.hits.filter((h) => h.type === 'sentence-rhythm')).toHaveLength(0)
   })
