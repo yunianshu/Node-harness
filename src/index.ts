@@ -158,11 +158,16 @@ async function dispatchCommand(
       if (filled === null) throw err
       args = coerceFlags(spec, { ...flags, ...filled })
     }
+    // 长命令（novel-start 等）执行期间实时进度快照与正文流式事件依赖会话绑定
+    // 在 executeCommand 之前建立；若命令结束后才 attach，全程事件（含
+    // novel/story-*）都会错过，仅剩最终完成快照（实测正文 285 秒零事件）。
+    // attach 前 await 注册，确保 sessionEventTypesReady 已置位，消除冷启动竞态。
     const ask = spec.name === 'novel.start' ? makePhaseAsk(ctx, invocation) : undefined
-    const result = await app.executeCommand(spec.name, { ...args, operator: 'dsh-command' }, ask)
     if (FEED_COMMANDS.has(spec.name) && typeof args.project === 'string' && args.project.length > 0) {
+      await registerNovelSessionEvents()
       onFeed(invocation.agent.session as SessionAppender, args.project)
     }
+    const result = await app.executeCommand(spec.name, { ...args, operator: 'dsh-command' }, ask)
     return renderResult(result)
   } catch (err) {
     return {

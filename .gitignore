@@ -6,3 +6,10 @@ coverage/
 dsh-upstream/
 # 本地 dsh 装载验证用临时 home
 .tmp-dsh-home/
+# 工具产物（不入库）
+.codegraph/
+.playwright-mcp/
+.spec-workflow/
+.merkle-snapshot.json
+plugin-manifest.json
+*.png

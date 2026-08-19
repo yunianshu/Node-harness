@@ -1,4 +1,5 @@
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { copyFile, mkdir, readdir, rm } from 'node:fs/promises'
 import type { HostProvider } from './host/types.js'
 import { FakeHost } from './host/dsh-adapter.js'
@@ -42,6 +43,14 @@ export type PhaseAskFn = (phase: { label: string; summary: string }) => Promise<
 
 const PHASE_LABELS: Record<PhaseName | 'done', string> = { planning: '规划', outline: '章纲', write: '正文', done: '全书完成' }
 const PHASE_ROLES: Record<PhaseName, 'planner' | 'outliner' | 'writer'> = { planning: 'planner', outline: 'outliner', write: 'writer' }
+
+/**
+ * 默认风格包目录：相对插件包自身解析，而非 process.cwd()。
+ * 插件经 dsh `file:` 装载时进程 cwd 是 dsh 启动目录（非本仓库），
+ * 依赖 cwd 会找不到包（「风格包不存在：generic」）；模块位置（src/ 或 dist/）
+ * 的上一级即为仓库根，且两处相对结构一致，从任意 cwd 装载均可解析。
+ */
+const DEFAULT_STYLE_PACK_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', 'style-packs')
 
 /** 阶段结果 → 聊天可读摘要（命令层呈现给用户，字段级可调整由此文本触发）。 */
 export function phaseSummaryText(result: PhaseResult): string {
@@ -111,7 +120,7 @@ export class NovelHarnessApp {
     this.registry = new ProviderRegistry()
     this.limiter = new GlobalRateLimiter()
     this.channels = new ChannelManager()
-    this.stylePacks = new StylePackLoader(options.stylePackRoot ?? join(process.cwd(), 'style-packs'))
+    this.stylePacks = new StylePackLoader(options.stylePackRoot ?? DEFAULT_STYLE_PACK_ROOT)
     this.gateway =
       options.gateway ??
       new ModelGateway({

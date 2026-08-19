@@ -191,18 +191,44 @@ export class PipelineScheduler {
     }
   }
 
-  /** 单阶段入口：显式指定 phase 或自动选下一未完成阶段；每阶段完成发 pipeline.stage-done。 */
+  /** 单阶段入口：显式指定 phase 或自动选下一未完成阶段；每阶段完成发 pipeline.stage-done。
+   *  任何阶段失败（含上下文装配）统一回滚：暂停项目 + 释放锁，避免项目永久卡在运行态。 */
   async runPhase(
     projectId: string,
     signal: AbortSignal,
     options: { phase?: PhaseName; chapters?: number[] } = {},
   ): Promise<PhaseResult> {
-    const pc = await this.loadPhaseContext(projectId, signal)
-    const phase = options.phase ?? this.nextPhase(pc)
-    const targets = this.targetChapters(pc.config, options.chapters)
-    if (phase === 'planning') return this.planningPhase(pc)
-    if (phase === 'outline') return this.outlinePhase(pc, targets)
-    return this.writePhase(pc, targets)
+    try {
+      const pc = await this.loadPhaseContext(projectId, signal)
+      const phase = options.phase ?? this.nextPhase(pc)
+      const targets = this.targetChapters(pc.config, options.chapters)
+      if (phase === 'planning') return await this.planningPhase(pc)
+      if (phase === 'outline') return await this.outlinePhase(pc, targets)
+      return await this.writePhase(pc, targets)
+    } catch (err) {
+      await this.settlePhaseFailure(projectId, err)
+      throw err
+    }
+  }
+
+  /**
+   * 阶段失败统一回滚：暂停项目（回到 paused）并释放锁。
+   * 历史教训：loadPhaseContext 抛错（如风格包加载失败）绕过各阶段内部的保护性 catch，
+   * 锁与状态残留导致项目永久卡 planning，后续命令因 ALREADY_RUNNING 无法续跑。
+   */
+  private async settlePhaseFailure(projectId: string, err: unknown): Promise<void> {
+    this.deps.onEvent?.({
+      type: 'pipeline.error',
+      projectId,
+      stage: 'pipeline',
+      message: err instanceof Error ? err.message : String(err),
+    })
+    try {
+      await this.deps.projectService.pause(projectId)
+    } catch {
+      /* 可能已被并发暂停 */
+    }
+    await this.deps.projectService.releaseLock(projectId)
   }
 
   async runPlanning(projectId: string, signal: AbortSignal): Promise<PhaseResult> {
@@ -239,15 +265,15 @@ export class PipelineScheduler {
     try {
       await this.runPlanningCore(pc.ctx, pc.paths, pc.config, pc.matrix)
     } catch (err) {
-      // 规划补全 3 轮仍失败：暂停项目并告警（spec 5.3.3 场景 1），
-      // 不再让调度器静默吞错导致项目永久卡在 planning
-      this.deps.onEvent?.({ type: 'pipeline.error', projectId: pc.projectId, stage: 'planning', message: err instanceof Error ? err.message : String(err) })
-      try {
-        await this.deps.projectService.pause(pc.projectId)
-      } catch {
-        /* 可能已被并发暂停 */
-      }
-      await this.deps.projectService.releaseLock(pc.projectId)
+      // 规划补全 3 轮仍失败：告警（spec 5.3.3 场景 1），
+      // 不再让调度器静默吞错导致项目永久卡在 planning。
+      // 状态回滚（暂停 + 释放锁）由 runPhase 统一处理。
+      this.deps.onEvent?.({
+        type: 'pipeline.error',
+        projectId: pc.projectId,
+        stage: 'planning',
+        message: err instanceof Error ? err.message : String(err),
+      })
       throw err
     }
     await this.markPlanningDoneSafe(pc.projectId)

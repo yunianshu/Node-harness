@@ -134,12 +134,39 @@ async function snapshotOf(
  * such a consumer exists）。这里在启动期向该 Set 补注册本插件两型事件；
  * 失败（如 dsh 升级后冻结或改名）则整体降级为不追加，绝不污染会话日志。
  */
+/**
+ * 定位宿主进程实际使用的 dsh-session 实例：与持久层回放（coordinator）共享同一
+ * KNOWN_SESSION_EVENT_TYPES 集合。插件代码位于仓库目录，Node 按物理路径解析会把
+ * 动态 import('@deepseek-ai/dsh-session') 指向本地 node_modules 副本（rc.7），而底座
+ * 回放检查的是其全局嵌套实例（rc.6）——两个独立 Set，本地 add 对回放永不生效
+ * （表现为 novel/* 事件写入成功但历史回放报 unknown）。故经 dsh 入口（process.argv[1]）
+ * 的 createRequire 解析到底座嵌套实例再 add；vitest 等非宿主环境回退本地包（测试走 mock）。
+ */
+async function loadHostSessionModule(): Promise<unknown> {
+  if (!process.env.VITEST) {
+    const entry = process.argv[1]
+    if (typeof entry === 'string' && entry.length > 0) {
+      try {
+        const { createRequire } = await import('node:module')
+        const { pathToFileURL } = await import('node:url')
+        const hostRequire = createRequire(entry)
+        const resolved = hostRequire.resolve('@deepseek-ai/dsh-session')
+        const mod = await import(pathToFileURL(resolved).href)
+        if ((mod as { KNOWN_SESSION_EVENT_TYPES?: unknown }).KNOWN_SESSION_EVENT_TYPES !== undefined) return mod
+      } catch {
+        /* 非 dsh 宿主（vitest 等）：回退本地包 */
+      }
+    }
+  }
+  return import('@deepseek-ai/dsh-session')
+}
+
 let sessionEventTypesReady = false
 
 export async function registerNovelSessionEvents(): Promise<boolean> {
   if (sessionEventTypesReady) return true
   try {
-    const session = (await import('@deepseek-ai/dsh-session')) as {
+    const session = (await loadHostSessionModule()) as {
       KNOWN_SESSION_EVENT_TYPES?: ReadonlySet<string> & { add?(value: string): unknown }
     }
     const known = session.KNOWN_SESSION_EVENT_TYPES
