@@ -1,7 +1,7 @@
 import { Service, type Context } from '@deepseek-ai/cordis'
 import type { CommandInvocation, CommandResult } from '@deepseek-ai/dsh-commands'
 import type { AskUserQuestionAnswer, AskUserQuestionItem } from '@deepseek-ai/dsh-user-questions'
-import { NovelHarnessApp, type CommandSpec } from './app.js'
+import { NovelHarnessApp, type CommandSpec, type PhaseAskFn } from './app.js'
 import { DshHostAdapter, FakeHost } from './host/dsh-adapter.js'
 import type { HostProvider } from './host/types.js'
 import { coerceFlags, commandNameOf, parseFlags, usageOf, type ParsedFlags } from './command-line.js'
@@ -36,8 +36,8 @@ declare module '@deepseek-ai/cordis' {
 /** 命中含密钥入参的命令：recordInput 关闭，避免密钥进入会话日志（spec 4.3.2）。 */
 const SECRET_INPUT_COMMANDS = new Set(['novel.admin.provider'])
 
-/** 启动/恢复/查询类命令：成功后把发起会话绑定为进度推送目标（status 查询顺带刷新实时卡片）。 */
-const FEED_COMMANDS = new Set(['novel.start', 'novel.resume', 'novel.regenerate', 'novel.guidance.regen', 'novel.status'])
+/** 启动/恢复/查询/单阶段类命令：成功后把发起会话绑定为进度推送目标（status 查询顺带刷新实时卡片）。 */
+const FEED_COMMANDS = new Set(['novel.start', 'novel.resume', 'novel.regenerate', 'novel.guidance.regen', 'novel.status', 'novel.plan', 'novel.outline', 'novel.write'])
 
 function renderResult(result: unknown): CommandResult {
   if (result === undefined || result === null) return { kind: 'success' }
@@ -111,6 +111,35 @@ function argIsProject(key: string): boolean {
   return key === 'project'
 }
 
+/** 构建 novel.start 的逐阶段提问（经底座用户提问服务，聊天流内呈现选项）。 */
+function makePhaseAsk(ctx: Context, invocation: CommandInvocation): PhaseAskFn {
+  return async ({ label, summary }) => {
+    try {
+      const answer = await ctx.userQuestions.ask({
+        questions: [
+          {
+            id: 'next',
+            question: `「${label}」阶段完成，继续下一步？`,
+            detail: `${summary}\n\n选择「继续」进入下一阶段；「停止」暂停项目，稍后可手动续跑。`,
+            options: [
+              { label: '继续', description: '进入下一阶段' },
+              { label: '停止', description: '暂停项目，等待手动续跑' },
+            ],
+          },
+        ],
+        agent: invocation.agent,
+        signal: invocation.signal,
+      })
+      const item = answer.answers[0]
+      const chosen = item.selected[0] ?? item.custom ?? ''
+      return chosen === '停止' || chosen === 'stop' ? 'stop' : 'continue'
+    } catch {
+      // 无提问 provider / agent 非 live：返回 continue 由命令层不阻塞连续跑完
+      return 'continue'
+    }
+  }
+}
+
 /** 解析 rawInput 并分发到共享服务层（命令行与 UI 调用同一入口，design 2.1.2 第 4 条）。 */
 async function dispatchCommand(
   ctx: Context,
@@ -129,7 +158,8 @@ async function dispatchCommand(
       if (filled === null) throw err
       args = coerceFlags(spec, { ...flags, ...filled })
     }
-    const result = await app.executeCommand(spec.name, { ...args, operator: 'dsh-command' })
+    const ask = spec.name === 'novel.start' ? makePhaseAsk(ctx, invocation) : undefined
+    const result = await app.executeCommand(spec.name, { ...args, operator: 'dsh-command' }, ask)
     if (FEED_COMMANDS.has(spec.name) && typeof args.project === 'string' && args.project.length > 0) {
       onFeed(invocation.agent.session as SessionAppender, args.project)
     }

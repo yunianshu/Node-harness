@@ -49,6 +49,9 @@ describe('plugin entry（真实 dsh 命令体系集成）', () => {
     expect(names).toContain('novel-guidance-add')
     expect(names).toContain('novel-guidance-regen')
     expect(names).toContain('novel-admin-provider')
+    expect(names).toContain('novel-plan')
+    expect(names).toContain('novel-outline')
+    expect(names).toContain('novel-write')
     expect(names.every((n) => !n.includes('.'))).toBe(true)
   })
 

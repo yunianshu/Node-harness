@@ -43,6 +43,7 @@ const MILESTONE_EVENTS = new Set([
   'pipeline.completed',
   'project.status',
   'pipeline.log',
+  'pipeline.stage-done',
 ])
 
 const STAGE_LABELS: Record<string, string> = {
@@ -72,6 +73,8 @@ function milestoneNote(event: { type: string; [key: string]: unknown }): string 
     }
     case 'pipeline.summary':
       return undefined
+    case 'pipeline.stage-done':
+      return `阶段完成：${String(event.phase ?? '') === 'planning' ? '规划' : String(event.phase) === 'outline' ? '章纲' : String(event.phase) === 'write' ? '正文' : String(event.phase)}`
     default:
       return `项目状态：${String(event.status ?? '')}`
   }

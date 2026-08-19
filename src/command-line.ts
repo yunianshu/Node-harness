@@ -102,12 +102,19 @@ export function coerceFlags(spec: CommandSpec, flags: ParsedFlags): Record<strin
 
 /** 列表型参数（章号列表）。 */
 function isListKey(spec: CommandSpec, key: string): boolean {
-  return key === 'chapters' && (spec.name === 'novel.regenerate' || spec.name === 'novel.guidance.regen')
+  return (
+    key === 'chapters' &&
+    (spec.name === 'novel.regenerate' || spec.name === 'novel.guidance.regen' || spec.name === 'novel.outline' || spec.name === 'novel.write')
+  )
 }
 
 /** 布尔型参数（裸旗标语义）。 */
 function isBoolKey(spec: CommandSpec, key: string): boolean {
-  return (spec.name === 'novel.export' && key === 'allowGaps') || (spec.name === 'novel.guidance.regen' && key === 'confirmFinal')
+  return (
+    (spec.name === 'novel.export' && key === 'allowGaps') ||
+    (spec.name === 'novel.guidance.regen' && key === 'confirmFinal') ||
+    (spec.name === 'novel.start' && key === 'auto')
+  )
 }
 
 /** 由命令规格生成用法提示（必填裸露、可选加方括号）。 */

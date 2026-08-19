@@ -8,7 +8,7 @@ import { ChannelManager } from './model/fallback.js'
 import { ModelGateway } from './model/gateway.js'
 import { ProjectService } from './project/service.js'
 import { StylePackLoader } from './quality/style-pack-loader.js'
-import { PipelineScheduler } from './pipeline/scheduler.js'
+import { PipelineScheduler, PhaseName, PhaseResult } from './pipeline/scheduler.js'
 import { IsolationLedger } from './pipeline/isolation.js'
 import { ChapterSlotManager } from './pipeline/worker-pool.js'
 import { GuidanceService, GuidanceStage, GuidanceNote } from './guidance/service.js'
@@ -34,6 +34,40 @@ export interface NovelAppOptions {
   stylePackRoot?: string
   fetchImpl?: typeof fetch
   gateway?: ModelGateway
+}
+
+/** 分步执行的阶段提问：命令层返回继续/停止，供聊天流逐阶段询问。 */
+export type PhaseAskDecision = 'continue' | 'stop'
+export type PhaseAskFn = (phase: { label: string; summary: string }) => Promise<PhaseAskDecision>
+
+const PHASE_LABELS: Record<PhaseName | 'done', string> = { planning: '规划', outline: '章纲', write: '正文', done: '全书完成' }
+const PHASE_ROLES: Record<PhaseName, 'planner' | 'outliner' | 'writer'> = { planning: 'planner', outline: 'outliner', write: 'writer' }
+
+/** 阶段结果 → 聊天可读摘要（命令层呈现给用户，字段级可调整由此文本触发）。 */
+export function phaseSummaryText(result: PhaseResult): string {
+  const counts = result.counts
+  const countSuffix = counts
+    ? `\n进度：章纲 ${counts.outlineDone}/${counts.total} · 草稿 ${counts.draftDone}/${counts.total} · 终稿 ${counts.finalDone}/${counts.total}`
+    : ''
+  if (result.phase === 'planning' && result.planning) {
+    return [
+      `世界观：${result.planning.worldview}`,
+      `人物：${result.planning.characters.join('、') || '无'}`,
+      `地点：${result.planning.locations.join('、') || '无'}`,
+    ].join('\n') + countSuffix
+  }
+  if (result.phase === 'outline' && result.outline) {
+    return (
+      result.outline.map((o) => `第${o.chapter}章「${o.title}」${o.summary ? `：${o.summary.slice(0, 50)}` : ''}`).join('\n') ||
+      '（无章纲产物）'
+    ) + countSuffix
+  }
+  if (result.phase === 'write' && result.write) {
+    const parts = [`草稿 ${result.write.draftDone} 章`, `终稿 ${result.write.finalDone} 章`]
+    if (result.write.isolated.length > 0) parts.push(`隔离 ${result.write.isolated.join(',')}`)
+    return parts.join(' · ') + countSuffix
+  }
+  return result.status === 'already-done' ? '该阶段已有产物，未重复执行' : '完成'
 }
 
 export class NovelHarnessApp {
@@ -158,7 +192,10 @@ export class NovelHarnessApp {
   commands(): CommandSpec[] {
     return [
       { name: 'novel.create', description: '创建小说项目', args: [{ key: 'name', required: true, description: '项目名' }, { key: 'premise', required: true, description: '故事前提' }, { key: 'chapters', required: true, description: '总章数' }, { key: 'stylePack', required: false, description: '风格包' }] },
-      { name: 'novel.start', description: '启动生成', args: [{ key: 'project', required: true, description: '项目ID' }] },
+      { name: 'novel.start', description: '启动生成（逐阶段询问，--auto 全自动）', args: [{ key: 'project', required: true, description: '项目ID' }, { key: 'auto', required: false, description: '全自动不询问' }] },
+      { name: 'novel.plan', description: '执行规划阶段', args: [{ key: 'project', required: true, description: '项目ID' }, { key: 'model', required: false, description: '覆盖规划模型' }, { key: 'temperature', required: false, description: '覆盖温度' }, { key: 'maxTokens', required: false, description: '覆盖输出上限' }] },
+      { name: 'novel.outline', description: '执行章纲阶段', args: [{ key: 'project', required: true, description: '项目ID' }, { key: 'chapters', required: false, description: '章号列表' }, { key: 'model', required: false, description: '覆盖章纲模型' }, { key: 'temperature', required: false, description: '覆盖温度' }, { key: 'maxTokens', required: false, description: '覆盖输出上限' }] },
+      { name: 'novel.write', description: '执行正文阶段', args: [{ key: 'project', required: true, description: '项目ID' }, { key: 'chapters', required: false, description: '章号列表' }, { key: 'model', required: false, description: '覆盖写作模型' }, { key: 'temperature', required: false, description: '覆盖温度' }, { key: 'maxTokens', required: false, description: '覆盖输出上限' }] },
       { name: 'novel.pause', description: '暂停生成', args: [{ key: 'project', required: true, description: '项目ID' }] },
       { name: 'novel.resume', description: '恢复生成', args: [{ key: 'project', required: true, description: '项目ID' }] },
       { name: 'novel.stop', description: '终止项目', args: [{ key: 'project', required: true, description: '项目ID' }] },
@@ -173,7 +210,7 @@ export class NovelHarnessApp {
     ]
   }
 
-  async executeCommand(name: string, args: Record<string, unknown>): Promise<unknown> {
+  async executeCommand(name: string, args: Record<string, unknown>, ask?: PhaseAskFn): Promise<unknown> {
     switch (name) {
       case 'novel.create':
         return this.projects.create({
@@ -183,7 +220,25 @@ export class NovelHarnessApp {
           ...(args.stylePack ? { stylePackId: String(args.stylePack) } : {}),
         }, String(args.operator ?? 'cli'))
       case 'novel.start':
-        return this.startProject(String(args.project))
+        // 默认逐阶段执行（聊天询问下一步）；--auto 或非交互调用（无提问通道）回退全自动
+        if (Boolean(args.auto) || ask === undefined) return this.startProject(String(args.project))
+        return this.startStepped(String(args.project), ask)
+      case 'novel.plan':
+        return this.runOnePhase(String(args.project), 'planning')
+      case 'novel.outline':
+        return this.runOnePhase(String(args.project), 'outline', {
+          chapters: args.chapters as number[] | undefined,
+          model: args.model !== undefined ? String(args.model) : undefined,
+          temperature: args.temperature !== undefined ? Number(args.temperature) : undefined,
+          maxTokens: args.maxTokens !== undefined ? Number(args.maxTokens) : undefined,
+        })
+      case 'novel.write':
+        return this.runOnePhase(String(args.project), 'write', {
+          chapters: args.chapters as number[] | undefined,
+          model: args.model !== undefined ? String(args.model) : undefined,
+          temperature: args.temperature !== undefined ? Number(args.temperature) : undefined,
+          maxTokens: args.maxTokens !== undefined ? Number(args.maxTokens) : undefined,
+        })
       case 'novel.pause':
         return this.pauseProject(String(args.project))
       case 'novel.resume':
@@ -280,6 +335,104 @@ export class NovelHarnessApp {
     this.running.get(projectId)?.abort()
     this.running.delete(projectId)
     return result
+  }
+
+  /**
+   * 逐阶段启动（聊天式默认）：每完成一个阶段（规划/章纲/正文）调用 ask 询问下一步，
+   * 「继续」进入下一阶段，「停止」暂停项目（释放锁，可稍后手动续跑）；全书完成即止。
+   * ask 不可用（无提问 provider / 非 live agent）时降级为不阻塞、连续跑完剩余阶段。
+   */
+  async startStepped(projectId: string, ask: PhaseAskFn): Promise<unknown> {
+    const status = (await this.projects.loadProject(projectId)).status
+    if (status === 'pending' || status === 'paused') await this.projects.start(projectId)
+    const controller = new AbortController()
+    this.running.set(projectId, controller)
+    const summaries: string[] = []
+    let result: PhaseResult | undefined
+    let stopped = false
+    try {
+      do {
+        result = await this.scheduler.runPhase(projectId, controller.signal)
+        const label = PHASE_LABELS[result.phase]
+        const summary = phaseSummaryText(result)
+        summaries.push(`【${label}】${summary}`)
+        if (result.phase === 'done') break
+        let decision: PhaseAskDecision = 'continue'
+        try {
+          decision = await ask({ label, summary })
+        } catch {
+          /* 无提问通道：不阻塞，继续下一阶段 */
+        }
+        if (decision === 'stop') {
+          stopped = true
+          controller.abort()
+          await this.projects.pause(projectId)
+          await this.projects.releaseLock(projectId)
+          break
+        }
+      } while (true)
+    } finally {
+      this.running.delete(projectId)
+    }
+    return { projectId, phase: result?.phase ?? 'done', stopped, summaries: summaries.join('\n\n') }
+  }
+
+  /**
+   * 单阶段命令（novel-plan/outline/write）：确保项目已启动（锁），执行指定阶段，
+   * 完成后回到暂停态（等待聊天决定下一步）；全书完成则保持 completed。
+   * --model/--temperature/--maxTokens 覆盖对应角色绑定后执行。
+   */
+  async runOnePhase(
+    projectId: string,
+    phase: PhaseName,
+    options: { chapters?: number[]; model?: string; temperature?: number; maxTokens?: number } = {},
+  ): Promise<unknown> {
+    if (phase !== 'planning') await this.requirePlanning(projectId)
+    if (options.model !== undefined || options.temperature !== undefined || options.maxTokens !== undefined) {
+      await this.applyRoleOverrides(projectId, phase, options)
+    }
+    const status = (await this.projects.loadProject(projectId)).status
+    const startedByMe = status === 'pending' || status === 'paused'
+    if (startedByMe) await this.projects.start(projectId)
+    const controller = new AbortController()
+    this.running.set(projectId, controller)
+    try {
+      const result = await this.scheduler.runPhase(projectId, controller.signal, { phase, chapters: options.chapters })
+      if (startedByMe && result.phase !== 'done') {
+        await this.projects.pause(projectId)
+        await this.projects.releaseLock(projectId)
+      }
+      return result
+    } finally {
+      this.running.delete(projectId)
+    }
+  }
+
+  private async requirePlanning(projectId: string): Promise<void> {
+    const paths = await this.pathsOf(projectId)
+    if (!(await fileExists(paths.worldJson))) {
+      throw new Error('尚未完成规划：请先执行 novel-plan 完成世界观/人物/地点，再进入章纲或正文阶段')
+    }
+  }
+
+  private async applyRoleOverrides(
+    projectId: string,
+    phase: PhaseName,
+    overrides: { model?: string; temperature?: number; maxTokens?: number },
+  ): Promise<void> {
+    const role = PHASE_ROLES[phase]
+    const config = await this.projects.loadProject(projectId)
+    const bindings = config.bindings.map((b) =>
+      b.role !== role
+        ? b
+        : {
+            ...b,
+            primary: overrides.model !== undefined ? { ...b.primary, model: overrides.model } : b.primary,
+            temperature: overrides.temperature ?? b.temperature,
+            maxOutputTokens: overrides.maxTokens ?? b.maxOutputTokens,
+          },
+    )
+    await this.projects.updateBindings(projectId, bindings)
   }
 
   async status(projectId: string) {
