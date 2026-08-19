@@ -70,7 +70,19 @@ const writerInput: WriterInput = {
 }
 
 describe('WriterStage（正文截断守卫）', () => {
-  const ctxWithGateway = (invoke: ModelGateway['invoke']): StageContext => ({ projectId: 'p', gateway: { invoke } as ModelGateway, log: () => {} })
+  const ctxWithGateway = (invoke: ModelGateway['invoke']): StageContext => ({
+  projectId: 'p',
+  gateway: {
+    invoke,
+    // Task #10 后 writer 首轮流式面：委托同一 invoke mock，length 截断重试仍走直接 invoke
+    async invokeStream(role, request, ctx, onDelta) {
+      const res = await invoke(role, request, ctx)
+      onDelta?.(res.content)
+      return res
+    },
+  } as ModelGateway,
+  log: () => {},
+})
 
   it('finish_reason=length 时重试一次，第二次完整即返回正文', async () => {
     const invoke = vi

@@ -26,6 +26,8 @@ export interface StageContext {
   gateway: ModelGateway
   log: (entry: StageLogEntry) => void
   signal?: AbortSignal
+  /** 正文流式回调：writer 等阶段把逐字增量透传给上层（Task #8）。 */
+  onDelta?: (chapter: number, text: string) => void
 }
 
 export abstract class Stage<TInput, TOutput> {

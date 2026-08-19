@@ -23,6 +23,12 @@ class FakeLlmGateway implements ModelGateway {
     const content = this.handler(role, request, ctx)
     return { content, finishReason: 'stop' as const, usage: null, raw: {} }
   }
+  /** Task #10 后 writer 走 invokeStream：正文一次性回调（非 dsh 模型无增量）。 */
+  async invokeStream(role: PipelineRole, request: LlmRequest, ctx: InvokeContext, onDelta?: (text: string) => void) {
+    const res = await this.invoke(role, request, ctx)
+    onDelta?.(res.content)
+    return res
+  }
 }
 
 const PLANNING = JSON.stringify({

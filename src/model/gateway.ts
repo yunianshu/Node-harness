@@ -46,6 +46,21 @@ export function stripDshReasoning(content: string): string {
   return out.replace(/^[\s。！？；：、，,\.．'’“”"」『』…—-]+/, '')
 }
 
+/**
+ * 增量版推理剥离：返回「当前确定是真答案」的文本段；推理块未闭合返回 null（调用方不输出）。
+ * zai-coding-cn 推理流把每个推理 token 包裹为 `[思考]tok[思考]`，真答案在最后一个闭合
+ * `[思考]` 之后。剥掉已配对块后若仍有未配对标记，说明推理仍在进行，等待配对闭合。
+ * 与 stripDshReasoning 的差异：后者取「最后一个 [思考] 之后」容忍未闭合尾巴（聚合终值用），
+ * 本函数在推理未闭合时不产出任何内容，保证流式 UI 不泄漏推理文本（Task #8 正文流式）。
+ */
+export function stripDshReasoningDelta(buffer: string): string | null {
+  let out = buffer
+    .replace(/\[思考\][\s\S]*?\[思考\]/g, '')
+    .replace(/<think>[\s\S]*?<\/think>/g, '')
+  if (out.includes('[思考]') || out.includes('<think>')) return null
+  return out.replace(/^[\s。！？；：、，,\.．'’“”"」『』…—-]+/, '')
+}
+
 export interface ModelGatewayOptions {
   registry: ProviderRegistry
   limiter: GlobalRateLimiter
@@ -252,14 +267,15 @@ export class ModelGateway {
     throw new ModelExhaustedError(`角色 ${binding.role} 全部 dsh 模型不可用：${trailOf(trail)}`, trail)
   }
 
-  /** 消费 host.llm 流式增量，聚合为完整响应并透传 delta 回调。 */
+  /** 消费 host.llm 流式增量，聚合为完整响应并透传 delta 回调（增量剥离，推理不泄漏）。 */
   private async collectDsh(
     parsed: { provider: string; model: string },
     binding: ModelBinding,
     request: LlmRequest,
     onDelta?: (text: string) => void,
   ): Promise<ChatResponse> {
-    let raw = ''
+    let buffer = ''
+    let emitted = 0
     let finish: 'stop' | 'length' | 'error' | 'aborted' = 'stop'
     let errorMsg = ''
     for await (const delta of this.options.host.llm.stream({
@@ -270,16 +286,25 @@ export class ModelGateway {
       temperature: request.params?.temperature ?? binding.temperature,
       maxTokens: request.params?.maxOutputTokens ?? binding.maxOutputTokens,
     })) {
-      if (delta.text) raw += delta.text
+      if (delta.text) buffer += delta.text
       if (delta.finish) finish = delta.finish
       if (delta.error) errorMsg = delta.error
+      if (onDelta) {
+        // 增量剥离：推理未闭合返回 null（不输出），闭合后只推「确定真答案」的新增段，
+        // 保证流式 UI 不泄漏 GLM 推理块；推理期间 stripped 为空/回退时 emitted 保持。
+        const stripped = stripDshReasoningDelta(buffer)
+        if (stripped !== null && stripped.length > emitted) {
+          const inc = stripped.slice(emitted)
+          if (inc.length > 0) onDelta(inc)
+          emitted = stripped.length
+        }
+      }
     }
     if (finish === 'error' || finish === 'aborted') {
       throw new Error(errorMsg || `dsh 模型调用${finish === 'aborted' ? '中止' : '失败'}`)
     }
-    // 聚合后统一剥离推理块（Task #8 流式正文再做增量剥离），回调剥离后的完整文本
-    const content = stripDshReasoning(raw)
-    onDelta?.(content)
+    // 聚合终值用 stripDshReasoning（容忍未闭合尾巴），与增量累积一致（流结束时推理必闭合）。
+    const content = stripDshReasoning(buffer)
     return { content, finishReason: finish === 'length' ? 'length' : 'stop', usage: null, raw: null }
   }
 

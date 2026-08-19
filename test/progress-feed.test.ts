@@ -61,6 +61,12 @@ function makeGateway(): ModelGateway {
       }
       return { content: JSON.stringify({ score: 8, issues: [], styleDeviation: 'none' }), finishReason: 'stop', usage: null, raw: {} }
     },
+    // Task #10 后 writer 走流式面：聚合后一次性回调（非 dsh 模型无真实增量）
+    async invokeStream(role, request, ctx, onDelta) {
+      const res = await this.invoke(role, request, ctx)
+      onDelta?.(res.content)
+      return res
+    },
   }
 }
 
