@@ -1,7 +1,7 @@
 import { join } from 'node:path'
 import type { HostProvider } from '../host/types.js'
 import type { ModelGateway } from '../model/gateway.js'
-import type { ProjectConfig, ModelBinding } from '../project/schema.js'
+import type { ProjectConfig } from '../project/schema.js'
 import { ProjectService } from '../project/service.js'
 import { StylePackLoader, StylePack } from '../quality/style-pack-loader.js'
 import { checkDraft, verdict } from '../quality/quality-gate.js'
@@ -15,7 +15,7 @@ import { IsolationLedger } from './isolation.js'
 import { ChapterSlotManager } from './worker-pool.js'
 import { compressReviewFeedback } from './feedback-compressor.js'
 import { PlannerStage, PlannerIncompleteError } from './stages/planner.js'
-import { OutlinerStage, OutlineIncompleteError } from './stages/outliner.js'
+import { OutlinerStage } from './stages/outliner.js'
 import { OutlineReviewerStage } from './stages/outline-reviewer.js'
 import { WriterStage } from './stages/writer.js'
 import { ReviewerStage } from './stages/reviewer.js'
@@ -49,6 +49,37 @@ export interface PipelineSummary {
   aborted: boolean
 }
 
+/** 分步执行（runPhase）的单个阶段结果：命令层据此呈现阶段摘要并询问下一步。 */
+export type PhaseName = 'planning' | 'outline' | 'write'
+
+export interface PhaseResult {
+  phase: PhaseName | 'done'
+  projectId: string
+  status: 'done' | 'already-done'
+  /** 规划阶段：世界观摘要 + 角色/地点名列表。 */
+  planning?: { worldview: string; characters: string[]; locations: string[] }
+  /** 章纲阶段：各章标题/摘要（目标章序升序）。 */
+  outline?: Array<{ chapter: number; title: string; summary: string }>
+  /** 正文阶段：产出统计。 */
+  write?: { draftDone: number; finalDone: number; isolated: number[] }
+  counts?: { outlineDone: number; draftDone: number; finalDone: number; total: number }
+}
+
+/** 阶段共享上下文：loadPhaseContext 一次性装配，供三个阶段方法复用（断点续跑底座）。 */
+interface PhaseContext {
+  projectId: string
+  paths: ReturnType<typeof projectPaths>
+  /** 应用风格包阈值覆盖后的项目配置（与 run() 历史行为一致）。 */
+  config: ProjectConfig
+  stylePack: StylePack
+  matrix: MatrixStore
+  isolation: IsolationLedger
+  progress: ProgressMatrix
+  signal: AbortSignal
+  scan: { progress: ProgressMatrix; maxFinalChapter: number; hasPlanning: boolean }
+  ctx: { projectId: string; gateway: ModelGateway; log: (e: StageLogEntry) => void; signal?: AbortSignal }
+}
+
 interface ChapterRuntime {
   directedRounds: number
   fullRegens: number
@@ -64,7 +95,41 @@ export class PipelineScheduler {
     this.deps.onEvent?.({ type: 'pipeline.log', projectId: ctx.projectId, ...entry })
   }
 
+  /**
+   * 全自动流水线（向后兼容）：循环 runPhase 直到全书完成或中止。
+   * 规划 → 全部章纲 → 全部正文，每阶段产物断点续跑（已有产物跳过）。
+   */
   async run(projectId: string, signal: AbortSignal): Promise<PipelineSummary> {
+    let result: PhaseResult
+    do {
+      result = await this.runPhase(projectId, signal)
+    } while (result.phase !== 'done' && !signal.aborted)
+
+    const pc = await this.loadPhaseContext(projectId, signal)
+    const finalCount = this.countFinal(pc.progress)
+    const isolated = pc.isolation.list().map((i) => i.chapter)
+    const aborted = signal.aborted
+    this.deps.onEvent?.({
+      type: 'pipeline.summary',
+      projectId,
+      totalChapters: pc.config.totalChapters,
+      finalCount,
+      isolated,
+      aborted,
+    })
+    if (aborted) {
+      try {
+        await this.deps.projectService.pause(projectId)
+      } catch {
+        /* may already be paused */
+      }
+    }
+    await this.deps.projectService.releaseLock(projectId)
+    return { projectId, totalChapters: pc.config.totalChapters, finalCount, isolated, aborted }
+  }
+
+  /** 阶段共享上下文装配：数据根/项目配置/风格包覆盖/断点扫描/隔离台账/记忆矩阵/阶段日志。 */
+  private async loadPhaseContext(projectId: string, signal: AbortSignal): Promise<PhaseContext> {
     const dataRoot = await this.deps.host.storage.dataRoot()
     const paths = projectPaths(dataRoot, projectId)
     const config = await this.deps.projectService.loadProject(projectId)
@@ -103,30 +168,192 @@ export class PipelineScheduler {
     })
     await matrix.load()
 
-    if (!scan.hasPlanning) {
-      try {
-        await this.runPlanning(ctx, paths, config, matrix)
-      } catch (err) {
-        // 规划补全 3 轮仍失败：暂停项目并告警（spec 5.3.3 场景 1），
-        // 不再让调度器静默吞错导致项目永久卡在 planning
-        this.deps.onEvent?.({ type: 'pipeline.error', projectId, stage: 'planning', message: err instanceof Error ? err.message : String(err) })
-        try {
-          await this.deps.projectService.pause(projectId)
-        } catch {
-          /* 可能已被并发暂停 */
-        }
-        await this.deps.projectService.releaseLock(projectId)
-        throw err
+    return {
+      projectId,
+      paths,
+      config: configWithPackOverrides,
+      stylePack,
+      matrix,
+      isolation,
+      progress: scan.progress,
+      signal,
+      scan,
+      ctx,
+    }
+  }
+
+  /** 单阶段入口：显式指定 phase 或自动选下一未完成阶段；每阶段完成发 pipeline.stage-done。 */
+  async runPhase(
+    projectId: string,
+    signal: AbortSignal,
+    options: { phase?: PhaseName; chapters?: number[] } = {},
+  ): Promise<PhaseResult> {
+    const pc = await this.loadPhaseContext(projectId, signal)
+    const phase = options.phase ?? this.nextPhase(pc)
+    const targets = this.targetChapters(pc.config, options.chapters)
+    if (phase === 'planning') return this.planningPhase(pc)
+    if (phase === 'outline') return this.outlinePhase(pc, targets)
+    return this.writePhase(pc, targets)
+  }
+
+  async runPlanning(projectId: string, signal: AbortSignal): Promise<PhaseResult> {
+    return this.runPhase(projectId, signal, { phase: 'planning' })
+  }
+
+  async runOutline(projectId: string, signal: AbortSignal, chapters?: number[]): Promise<PhaseResult> {
+    return this.runPhase(projectId, signal, { phase: 'outline', chapters })
+  }
+
+  async runWrite(projectId: string, signal: AbortSignal, chapters?: number[]): Promise<PhaseResult> {
+    return this.runPhase(projectId, signal, { phase: 'write', chapters })
+  }
+
+  /** 自动选下一未完成阶段：无规划 → planning；章纲未齐 → outline；否则 write。 */
+  private nextPhase(pc: PhaseContext): PhaseName {
+    if (!pc.scan.hasPlanning) return 'planning'
+    const targets = this.targetChapters(pc.config)
+    const outlineDone = targets.every((ch) => pc.progress.get(ch)?.outlineReview === true || pc.isolation.isIsolated(ch))
+    if (!outlineDone) return 'outline'
+    return 'write'
+  }
+
+  private async planningPhase(pc: PhaseContext): Promise<PhaseResult> {
+    if (pc.scan.hasPlanning) {
+      return {
+        phase: 'planning',
+        projectId: pc.projectId,
+        status: 'already-done',
+        planning: await this.planningSummary(pc),
+        counts: this.countsOf(pc),
       }
     }
+    try {
+      await this.runPlanningCore(pc.ctx, pc.paths, pc.config, pc.matrix)
+    } catch (err) {
+      // 规划补全 3 轮仍失败：暂停项目并告警（spec 5.3.3 场景 1），
+      // 不再让调度器静默吞错导致项目永久卡在 planning
+      this.deps.onEvent?.({ type: 'pipeline.error', projectId: pc.projectId, stage: 'planning', message: err instanceof Error ? err.message : String(err) })
+      try {
+        await this.deps.projectService.pause(pc.projectId)
+      } catch {
+        /* 可能已被并发暂停 */
+      }
+      await this.deps.projectService.releaseLock(pc.projectId)
+      throw err
+    }
+    await this.markPlanningDoneSafe(pc.projectId)
+    this.deps.onEvent?.({ type: 'pipeline.stage-done', projectId: pc.projectId, phase: 'planning' })
+    return {
+      phase: 'planning',
+      projectId: pc.projectId,
+      status: 'done',
+      planning: await this.planningSummary(pc),
+      counts: this.countsOf(pc),
+    }
+  }
 
+  private async planningSummary(pc: PhaseContext) {
+    const world = await readJsonValidated<PlanningArtifacts['world']>(pc.paths.worldJson, (r): r is PlanningArtifacts['world'] => typeof r === 'object' && r !== null && 'worldview' in r)
+    const characters = await readJsonValidated<PlanningArtifacts['characters']>(pc.paths.charactersJson, Array.isArray as unknown as (r: unknown) => r is PlanningArtifacts['characters'])
+    const locations = await readJsonValidated<PlanningArtifacts['locations']>(pc.paths.locationsJson, Array.isArray as unknown as (r: unknown) => r is PlanningArtifacts['locations'])
+    return {
+      worldview: world?.worldview ?? '',
+      characters: (characters ?? []).map((c) => c.name),
+      locations: (locations ?? []).map((l) => l.name),
+    }
+  }
+
+  private async outlinePhase(pc: PhaseContext, targets: number[]): Promise<PhaseResult> {
+    const isDone = targets.every((ch) => pc.progress.get(ch)?.outlineReview === true || pc.isolation.isIsolated(ch))
+    const summaries = (): Promise<Array<{ chapter: number; title: string; summary: string }>> => this.outlineSummaries(pc, targets)
+    if (isDone) {
+      return { phase: 'outline', projectId: pc.projectId, status: 'already-done', outline: await summaries(), counts: this.countsOf(pc) }
+    }
+    await this.outlineLane(pc, targets)
+    this.deps.onEvent?.({ type: 'pipeline.stage-done', projectId: pc.projectId, phase: 'outline' })
+    return { phase: 'outline', projectId: pc.projectId, status: 'done', outline: await summaries(), counts: this.countsOf(pc) }
+  }
+
+  private async outlineSummaries(
+    pc: PhaseContext,
+    targets: number[],
+  ): Promise<Array<{ chapter: number; title: string; summary: string }>> {
+    const out: Array<{ chapter: number; title: string; summary: string }> = []
+    for (const ch of targets) {
+      const outline = await readJsonValidated<ChapterOutline>(
+        join(pc.paths.chapters.outline, `${chapterFile(ch)}.json`),
+        (r): r is ChapterOutline => typeof r === 'object' && r !== null && 'scenes' in r,
+      )
+      if (outline) out.push({ chapter: ch, title: outline.title, summary: outline.summary })
+    }
+    return out
+  }
+
+  private async writePhase(pc: PhaseContext, targets: number[]): Promise<PhaseResult> {
+    const isDone = targets.every((ch) => pc.progress.get(ch)?.final === true || pc.isolation.isIsolated(ch))
+    const counts = this.countsOf(pc)
+    const isolated = pc.isolation.list().map((i) => i.chapter)
+    const allDone = counts.finalDone + isolated.length >= pc.config.totalChapters
+    if (isDone) {
+      if (allDone) await this.markCompleteSafe(pc.projectId)
+      return {
+        phase: allDone ? 'done' : 'write',
+        projectId: pc.projectId,
+        status: 'already-done',
+        write: { draftDone: counts.draftDone, finalDone: counts.finalDone, isolated },
+        counts,
+      }
+    }
+    await this.runWriteWorkers(pc, targets)
+    const after = this.countsOf(pc)
+    const isolatedAfter = pc.isolation.list().map((i) => i.chapter)
+    const allAfter = after.finalDone + isolatedAfter.length >= pc.config.totalChapters
+    if (allAfter) await this.markCompleteSafe(pc.projectId)
+    this.deps.onEvent?.({ type: 'pipeline.stage-done', projectId: pc.projectId, phase: 'write', counts: after })
+    return {
+      phase: allAfter ? 'done' : 'write',
+      projectId: pc.projectId,
+      status: 'done',
+      write: { draftDone: after.draftDone, finalDone: after.finalDone, isolated: isolatedAfter },
+      counts: after,
+    }
+  }
+
+  /** 目标章集合：未指定时为全部章，指定时过滤越界并去重升序。 */
+  private targetChapters(config: ProjectConfig, chapters?: number[]): number[] {
+    if (chapters !== undefined && chapters.length > 0) {
+      return [...new Set(chapters)]
+        .filter((c) => Number.isInteger(c) && c >= 1 && c <= config.totalChapters)
+        .sort((a, b) => a - b)
+    }
+    return Array.from({ length: config.totalChapters }, (_, i) => i + 1)
+  }
+
+  private countsOf(pc: PhaseContext): { outlineDone: number; draftDone: number; finalDone: number; total: number } {
+    let outlineDone = 0
+    let draftDone = 0
+    let finalDone = 0
+    for (let ch = 1; ch <= pc.config.totalChapters; ch++) {
+      const s = pc.progress.get(ch)
+      if (s?.outlineReview) outlineDone++
+      if (s?.draft) draftDone++
+      if (s?.final) finalDone++
+    }
+    return { outlineDone, draftDone, finalDone, total: pc.config.totalChapters }
+  }
+
+  private countFinal(progress: ProgressMatrix): number {
+    let n = 0
+    for (const [, s] of progress) if (s.final) n++
+    return n
+  }
+
+  /** 正文阶段 worker 池：目标章并发写作（writer→checkDraft→reviewer→verdict→final→archive）。 */
+  private async runWriteWorkers(pc: PhaseContext, targets: number[]): Promise<void> {
+    const { ctx, paths, config, stylePack, matrix, isolation, progress, signal } = pc
     const runtimes = new Map<number, ChapterRuntime>()
-    const progress: ProgressMatrix = scan.progress
     const writerPool = new ChapterSlotManager(config.scheduling.writerConcurrency)
-
-    await this.markPlanningDoneSafe(projectId)
-
-    const chaptersOf = Array.from({ length: config.totalChapters }, (_, i) => i + 1)
+    const workable = targets.filter((ch) => !progress.get(ch)?.final && !isolation.isIsolated(ch))
 
     const chapterTask = async (chapter: number): Promise<void> => {
       if (signal.aborted) return
@@ -136,7 +363,7 @@ export class PipelineScheduler {
           await this.processChapter(chapter, {
             ctx,
             paths,
-            config: configWithPackOverrides,
+            config,
             stylePack,
             matrix,
             isolation,
@@ -150,7 +377,7 @@ export class PipelineScheduler {
           const message = err instanceof Error ? err.message : String(err)
           this.deps.onEvent?.({
             type: 'chapter.error',
-            projectId,
+            projectId: pc.projectId,
             chapter,
             message: `${err instanceof Error ? err.stack : message}`,
           })
@@ -161,7 +388,7 @@ export class PipelineScheduler {
               kind: 'consecutive-failures',
               rewriteSummary: `失败${runtime.consecutiveFailures}次`,
             })
-            this.deps.onEvent?.({ type: 'chapter.isolated', projectId, chapter, reason: message })
+            this.deps.onEvent?.({ type: 'chapter.isolated', projectId: pc.projectId, chapter, reason: message })
           }
         }
       })
@@ -169,7 +396,7 @@ export class PipelineScheduler {
 
     const workers = Array.from({ length: config.scheduling.writerConcurrency }, async () => {
       while (!signal.aborted) {
-        const chapter = chaptersOf.find(
+        const chapter = workable.find(
           (ch) =>
             !progress.get(ch)?.final &&
             !isolation.isIsolated(ch) &&
@@ -177,7 +404,7 @@ export class PipelineScheduler {
             this.outlineReady(ch, progress, config.scheduling.outlineLookahead, runtimes),
         )
         if (chapter === undefined) {
-          const allDone = chaptersOf.every((ch) => progress.get(ch)?.final || isolation.isIsolated(ch))
+          const allDone = workable.every((ch) => progress.get(ch)?.final || isolation.isIsolated(ch))
           if (allDone) return
           await sleep(50)
           continue
@@ -186,50 +413,7 @@ export class PipelineScheduler {
       }
     })
 
-    const outlineLane = this.runOutlineLane({
-      ctx,
-      paths,
-      config: configWithPackOverrides,
-      stylePack,
-      matrix,
-      progress,
-      runtimes,
-      isolation,
-      signal,
-      scan,
-    }).catch(async (err: unknown) => {
-      this.deps.onEvent?.({
-        type: 'pipeline.error',
-        projectId,
-        message: err instanceof Error ? err.message : String(err),
-      })
-    })
-
-    await Promise.allSettled([outlineLane, ...workers])
-
-    const finalCount = chaptersOf.filter((ch) => progress.get(ch)?.final).length
-    const isolated = isolation.list().map((i) => i.chapter)
-    const aborted = signal.aborted
-    if (!aborted && finalCount + isolated.length >= config.totalChapters) {
-      await this.markCompleteSafe(projectId)
-    }
-    this.deps.onEvent?.({
-      type: 'pipeline.summary',
-      projectId,
-      totalChapters: config.totalChapters,
-      finalCount,
-      isolated,
-      aborted,
-    })
-    if (aborted) {
-      try {
-        await this.deps.projectService.pause(projectId)
-      } catch {
-        /* may already be paused */
-      }
-    }
-    await this.deps.projectService.releaseLock(projectId)
-    return { projectId, totalChapters: config.totalChapters, finalCount, isolated, aborted }
+    await Promise.allSettled(workers)
   }
 
   private async markPlanningDoneSafe(projectId: string): Promise<void> {
@@ -259,7 +443,7 @@ export class PipelineScheduler {
     return status?.outlineReview === true
   }
 
-  private async runPlanning(
+  private async runPlanningCore(
     ctx: { projectId: string; gateway: ModelGateway; log: (e: StageLogEntry) => void; signal?: AbortSignal },
     paths: ReturnType<typeof projectPaths>,
     config: ProjectConfig,
@@ -295,19 +479,10 @@ export class PipelineScheduler {
     throw new Error(`规划阶段连续失败：${feedback.join('；')}`)
   }
 
-  private async runOutlineLane(args: {
-    ctx: { projectId: string; gateway: ModelGateway; log: (e: StageLogEntry) => void; signal?: AbortSignal }
-    paths: ReturnType<typeof projectPaths>
-    config: ProjectConfig
-    stylePack: StylePack
-    matrix: MatrixStore
-    progress: ProgressMatrix
-    runtimes: Map<number, ChapterRuntime>
-    isolation: IsolationLedger
-    signal: AbortSignal
-    scan: { progress: ProgressMatrix; maxFinalChapter: number }
-  }): Promise<void> {
-    const { ctx, paths, config, stylePack, matrix, progress, runtimes, isolation, signal } = args
+  /** 章纲阶段：目标章依次 outliner→outline-reviewer，审查不达门槛进入定向/全量重生成或隔离。 */
+  private async outlineLane(pc: PhaseContext, targets: number[]): Promise<void> {
+    const { ctx, paths, config, stylePack, matrix, progress, isolation, signal } = pc
+    const runtimes = new Map<number, ChapterRuntime>()
     const outliner = new OutlinerStage()
     const reviewer = new OutlineReviewerStage()
     const world = (await readJsonValidated<PlanningArtifacts['world']>(paths.worldJson, (r): r is PlanningArtifacts['world'] => typeof r === 'object' && r !== null && 'worldview' in r)) ?? { worldview: '', themes: [] }
@@ -318,7 +493,9 @@ export class PipelineScheduler {
     const chaptersDigest = characters.map((c) => `${c.name}（${c.tier}）${c.surfaceIdentity ?? ''}`).join('；')
     const locationsDigest = locations.map((l) => `- ${l.name}（${l.moodTone}）`).join('\n')
 
-    for (let chapter = 1; chapter <= config.totalChapters && !signal.aborted; chapter++) {
+    for (let i = 0; i < targets.length; i++) {
+      const chapter = targets[i]
+      if (signal.aborted) break
       const status = progress.get(chapter)
       if (status?.outlineReview) continue
       if (isolation.isIsolated(chapter)) continue
@@ -359,7 +536,7 @@ export class PipelineScheduler {
 
         const signals = computeConsistencySignals(matrix.current(), chapter, {
           protagonistNames: protagonistNamesOf(matrix.current()),
-          latestArchivedChapter: args.scan.maxFinalChapter,
+          latestArchivedChapter: pc.scan.maxFinalChapter,
         })
         const review = await reviewer.execute(
           {
@@ -424,7 +601,7 @@ export class PipelineScheduler {
             rewriteSummary: `失败${runtime.consecutiveFailures}次`,
           })
         } else {
-          chapter--
+          i-- // 瞬时失败重试同一章（失败计数不达阈值不跳过）
         }
       }
     }
