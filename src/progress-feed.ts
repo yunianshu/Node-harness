@@ -52,6 +52,12 @@ const MILESTONE_EVENTS = new Set([
   'pipeline.stage-done',
 ])
 
+/** 各会话已转发过的正文流式领域事件（按会话分组、事件对象引用去重）：
+ *  同一会话先后多个 FEED 命令（如 novel.status 后 novel.resume）各自绑定监听器，
+ *  会把同一条 novel.story-* 领域事件各转发一次——start 重复由 session.events 持久守卫
+ *  拦截，但 delta/finish 无守卫会正文双写/冗余收束，这里统一按事件对象去重，只落一条。 */
+const forwardedStoryEvents = new WeakMap<SessionAppender, WeakSet<object>>()
+
 const STAGE_LABELS: Record<string, string> = {
   planner: '规划',
   outliner: '章纲生成',
@@ -131,16 +137,22 @@ async function snapshotOf(
 /**
  * dsh 会话持久层回放只认 KNOWN_SESSION_EVENT_TYPES 内的类型，out-of-tree
  * 插件事件类型的注册面上游暂缺（known-event-types.ts 注释 deferred until
- * such a consumer exists）。这里在启动期向该 Set 补注册本插件两型事件；
- * 失败（如 dsh 升级后冻结或改名）则整体降级为不追加，绝不污染会话日志。
+ * such a consumer exists）。这里在启动期向该 Set 补注册本插件各事件类型；
+ * 失败则整体降级为不追加，绝不污染会话日志。
  */
+/** 宿主解析失败告警只发一次（apply 的 fire-and-forget 与 dispatchCommand 的 await 均会触发）。 */
+let hostResolutionWarned = false
+
 /**
  * 定位宿主进程实际使用的 dsh-session 实例：与持久层回放（coordinator）共享同一
  * KNOWN_SESSION_EVENT_TYPES 集合。插件代码位于仓库目录，Node 按物理路径解析会把
  * 动态 import('@deepseek-ai/dsh-session') 指向本地 node_modules 副本（rc.7），而底座
  * 回放检查的是其全局嵌套实例（rc.6）——两个独立 Set，本地 add 对回放永不生效
  * （表现为 novel/* 事件写入成功但历史回放报 unknown）。故经 dsh 入口（process.argv[1]）
- * 的 createRequire 解析到底座嵌套实例再 add；vitest 等非宿主环境回退本地包（测试走 mock）。
+ * 的 createRequire 解析到底座嵌套实例再 add。
+ * 非宿主环境（vitest）回退本地包（测试走 mock）；真实宿主解析失败**不回退本地**——
+ * 否则本地 rc.7 同样导出该 Set，add 成功却对回放无效，原缺陷静默重建且零日志。
+ * 返回 null 表示「未确认命中宿主实例」，由调用方降级为不追加（宁可丢实时呈现，不污染会话日志）。
  */
 async function loadHostSessionModule(): Promise<unknown> {
   if (!process.env.VITEST) {
@@ -153,8 +165,17 @@ async function loadHostSessionModule(): Promise<unknown> {
         const resolved = hostRequire.resolve('@deepseek-ai/dsh-session')
         const mod = await import(pathToFileURL(resolved).href)
         if ((mod as { KNOWN_SESSION_EVENT_TYPES?: unknown }).KNOWN_SESSION_EVENT_TYPES !== undefined) return mod
-      } catch {
-        /* 非 dsh 宿主（vitest 等）：回退本地包 */
+        if (!hostResolutionWarned) {
+          hostResolutionWarned = true
+          console.warn('[novel-harness] 宿主 dsh-session 实例缺失 KNOWN_SESSION_EVENT_TYPES 导出；novel/* 会话事件将不追加（会话日志安全）')
+        }
+        return null
+      } catch (err) {
+        if (!hostResolutionWarned) {
+          hostResolutionWarned = true
+          console.warn(`[novel-harness] 解析宿主 dsh-session 实例失败（${err instanceof Error ? err.message : String(err)}）；novel/* 会话事件将不追加（会话日志安全）`)
+        }
+        return null
       }
     }
   }
@@ -166,9 +187,12 @@ let sessionEventTypesReady = false
 export async function registerNovelSessionEvents(): Promise<boolean> {
   if (sessionEventTypesReady) return true
   try {
-    const session = (await loadHostSessionModule()) as {
-      KNOWN_SESSION_EVENT_TYPES?: ReadonlySet<string> & { add?(value: string): unknown }
-    }
+    const session = (await loadHostSessionModule()) as
+      | {
+          KNOWN_SESSION_EVENT_TYPES?: ReadonlySet<string> & { add?(value: string): unknown }
+        }
+      | null
+    if (session === null) return false
     const known = session.KNOWN_SESSION_EVENT_TYPES
     if (known === undefined || typeof known.add !== 'function') return false
     known.add('novel/progress-start')
@@ -259,6 +283,17 @@ export function attachProgressFeed(
   const handleStoryEvent = (event: { type: string; chapter?: number; [key: string]: unknown }): void => {
     if (typeof event.chapter !== 'number') return
     if (event.type === 'novel.story-start') {
+      // 与 progress-start 同构的幂等守卫：同一 (会话, 项目, 章) 至多一条 story-start。
+      // 重复 start 会被对话装配器按 "received more than one start Match" 拒绝整条会话
+      // （pause 中途写作后 resume 重发、同会话多个 FEED 命令各自转发同一条领域事件均会命中）。
+      // 已开卡时本次 start 跳过，后续 delta/finish 仍以 update 追加到既有卡（客户端按 id 键控累积）。
+      const alreadyStarted = (session.events ?? []).some(
+        (e) =>
+          e.type === 'novel/story-start' &&
+          (e.data as { projectId?: string; chapter?: number } | undefined)?.projectId === projectId &&
+          (e.data as { projectId?: string; chapter?: number } | undefined)?.chapter === event.chapter,
+      )
+      if (alreadyStarted) return
       pushStory('novel/story-start', {
         projectId,
         chapter: event.chapter,
@@ -296,6 +331,15 @@ export function attachProgressFeed(
     if (!sessionEventTypesReady) return
     if ((event as { projectId?: string }).projectId !== projectId) return
     if (event.type.startsWith('novel.story-')) {
+      // 同一条领域事件被同会话多个监听器各转发一次：按会话分组以事件对象引用去重，
+      // 只落一条（start 另有 session.events 持久守卫防跨重启/跨 attach 重复）。
+      let seen = forwardedStoryEvents.get(session)
+      if (seen === undefined) {
+        seen = new WeakSet<object>()
+        forwardedStoryEvents.set(session, seen)
+      }
+      if (seen.has(event)) return
+      seen.add(event)
       handleStoryEvent(event as unknown as { type: string; chapter?: number; [key: string]: unknown })
       return
     }

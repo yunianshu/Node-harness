@@ -183,4 +183,50 @@ describe('NovelProgressFeed（会话进度供给）', () => {
     }
     detach()
   })
+
+  it('never appends a second story-start for the same (project, chapter) across re-attach', async () => {
+    await registerNovelSessionEvents()
+    const created = await app.projects.create(
+      { name: '幂等测试', premise: '一个关于刀客与旧案的故事，雪夜长街，故人重逢，真相渐近', totalChapters: 1, stylePackId: 'gulong' },
+      'test',
+    )
+    const projectId = created.project.projectId
+    const session = new RecordingSession()
+
+    // 模拟同会话先后两个 FEED 命令（如 novel.status 后 novel.resume）：各自绑定监听器，
+    // 同一条 novel.story-start 领域事件会被两个监听器各转发一次——必须只落地一条 start，
+    // 否则对话装配器按 "more than one start Match" 拒绝整条会话（对话流消失）。
+    const detach1 = attachProgressFeed(app, session, projectId)
+    const detach2 = attachProgressFeed(app, session, projectId)
+    const emit = (event: unknown): void =>
+      (app as unknown as { emitPipelineEvent(e: unknown): void }).emitPipelineEvent(event)
+
+    emit({ type: 'novel.story-start', projectId, chapter: 1, title: '第1章' })
+    emit({ type: 'novel.story-start', projectId, chapter: 1, title: '第1章' })
+    emit({ type: 'novel.story-delta', projectId, chapter: 1, delta: '雪夜追加。' })
+    emit({ type: 'novel.story-finish', projectId, chapter: 1, score: 8 })
+    await new Promise((r) => setTimeout(r, 200))
+
+    const starts = session.events.filter((e) => e.type === 'novel/story-start')
+    expect(starts).toHaveLength(1)
+    expect((starts[0].data as { projectId: string; chapter: number }).projectId).toBe(projectId)
+
+    // 重复 start 被跳过；同一条 delta/finish 领域事件也只落一条（事件对象去重），
+    // 文本不双写，客户端正文无重复
+    const deltas = session.events
+      .filter((e) => e.type === 'novel/story-delta')
+      .map((e) => (e.data as { delta: string }).delta)
+    expect(deltas).toHaveLength(1)
+    expect(deltas[0]).toBe('雪夜追加。')
+    const finishes = session.events.filter((e) => e.type === 'novel/story-finish')
+    expect(finishes).toHaveLength(1)
+    expect((finishes[0].data as { score?: number }).score).toBe(8)
+
+    // 另一章（不同 key）仍能正常开卡
+    emit({ type: 'novel.story-start', projectId, chapter: 2, title: '第2章' })
+    await new Promise((r) => setTimeout(r, 50))
+    expect(session.events.filter((e) => e.type === 'novel/story-start')).toHaveLength(2)
+    detach1()
+    detach2()
+  })
 })

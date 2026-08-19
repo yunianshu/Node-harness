@@ -165,7 +165,9 @@ async function dispatchCommand(
     const ask = spec.name === 'novel.start' ? makePhaseAsk(ctx, invocation) : undefined
     if (FEED_COMMANDS.has(spec.name) && typeof args.project === 'string' && args.project.length > 0) {
       await registerNovelSessionEvents()
-      onFeed(invocation.agent.session as SessionAppender, args.project)
+      // agent 缺 session 时（极简构造/headless）保持旧语义：命令照跑、仅丢实时推送
+      const agent = invocation.agent as { session?: unknown } | undefined
+      if (agent?.session != null) onFeed(agent.session as SessionAppender, args.project)
     }
     const result = await app.executeCommand(spec.name, { ...args, operator: 'dsh-command' }, ask)
     return renderResult(result)
