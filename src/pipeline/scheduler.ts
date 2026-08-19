@@ -160,7 +160,16 @@ export class PipelineScheduler {
     const isolation = new IsolationLedger(paths.state.isolationJson)
     await isolation.load()
 
-    const ctx = { projectId, gateway: this.deps.gateway, log: (e: StageLogEntry) => this.log({ projectId }, e), signal }
+    // onDelta 接线：writer 阶段逐字增量 → novel.story-delta 领域事件（进度卡订阅方转发为会话流）
+    const ctx = {
+      projectId,
+      gateway: this.deps.gateway,
+      log: (e: StageLogEntry) => this.log({ projectId }, e),
+      signal,
+      onDelta: (chapter: number, delta: string) => {
+        this.deps.onEvent?.({ type: 'novel.story-delta', projectId, chapter, delta })
+      },
+    }
     const matrix = new MatrixStore({
       matrixFile: paths.memory.matrixJson,
       snapshotsDir: paths.memory.snapshotsDir,
@@ -657,6 +666,8 @@ export class PipelineScheduler {
     let draft = await readTextIfExists(join(paths.chapters.draft, `${chapterFile(chapter)}.txt`))
     let mode: 'first' | 'directed' = 'first'
     let rewrites = 0
+    /** 本次运行是否已对本章发过 story-start（重写循环只开一次卡）。 */
+    let streamStarted = false
 
     while (!signal.aborted) {
       const status = this.ensureProgress(progress, chapter)
@@ -696,6 +707,8 @@ export class PipelineScheduler {
           status.final = true
           await this.archiveChapter(chapter, draft, outline, matrix, tierMap, locationNames, paths, ctx)
           this.deps.onEvent?.({ type: 'chapter.final', projectId: ctx.projectId, chapter })
+          // 正文流式收束：终稿评分入帧，前端消息卡标记完成（resume 直审未开流式的章也补收束）
+          this.deps.onEvent?.({ type: 'novel.story-finish', projectId: ctx.projectId, chapter, score: review.report.score })
           return
         }
       }
@@ -708,6 +721,7 @@ export class PipelineScheduler {
           rewriteSummary: `重写${rewrites}轮`,
         })
         this.deps.onEvent?.({ type: 'chapter.isolated', projectId: ctx.projectId, chapter, reason: '审查超限' })
+        this.deps.onEvent?.({ type: 'novel.story-finish', projectId: ctx.projectId, chapter, isolated: true })
         return
       }
 
@@ -721,6 +735,12 @@ export class PipelineScheduler {
             ]
           : []
 
+      // 正文流式开卡：仅实际发起写作时（writer.execute）发一次 story-start，
+      // 重写轮（mode=directed）不再重复开卡，直接续流到同一张卡
+      if (!streamStarted) {
+        this.deps.onEvent?.({ type: 'novel.story-start', projectId: ctx.projectId, chapter, title: outline.title })
+        streamStarted = true
+      }
       draft = await writer.execute(
         {
           chapter,

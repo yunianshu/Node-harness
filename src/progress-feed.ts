@@ -32,7 +32,13 @@ export interface SessionAppender {
   readonly events?: readonly { type: string; data?: unknown }[]
   append(type: 'novel/progress-start', data: { projectId: string; name: string }): unknown
   append(type: 'novel/progress', data: NovelProgressEventData): unknown
+  append(type: 'novel/story-start', data: { projectId: string; chapter: number; title?: string }): unknown
+  append(type: 'novel/story-delta', data: { projectId: string; chapter: number; delta: string }): unknown
+  append(type: 'novel/story-finish', data: { projectId: string; chapter: number; score?: number; isolated?: boolean }): unknown
 }
+
+/** 正文流式增量帧的聚合窗口（ms）：高频 delta 累积后按窗口推一帧，避免刷爆会话日志。 */
+const STORY_DELTA_WINDOW_MS = 80
 
 /** 触发会话追加的里程碑事件类型；pipeline.log 提供阶段级粒度驱动步骤流转。 */
 const MILESTONE_EVENTS = new Set([
@@ -140,6 +146,9 @@ export async function registerNovelSessionEvents(): Promise<boolean> {
     if (known === undefined || typeof known.add !== 'function') return false
     known.add('novel/progress-start')
     known.add('novel/progress')
+    known.add('novel/story-start')
+    known.add('novel/story-delta')
+    known.add('novel/story-finish')
     sessionEventTypesReady = true
     return true
   } catch {
@@ -197,6 +206,60 @@ export function attachProgressFeed(
       .catch(() => {})
   }
 
+  // ---- 正文流式转发（novel.story-* 领域事件 → novel/story-* 会话事件）----
+  // delta 帧高频到达：按章累积，STORY_DELTA_WINDOW_MS 窗口推一帧（多章并发各自独立累积）；
+  // start 立即开卡，finish 先冲掉剩余 delta 再收束。整段 try 包裹：会话已关闭等不阻断流水线。
+  const storyDeltaBuffer = new Map<number, string>()
+  let storyTimer: ReturnType<typeof setTimeout> | null = null
+  const pushStory = (type: 'novel/story-start' | 'novel/story-delta' | 'novel/story-finish', data: Record<string, unknown>): void => {
+    try {
+      session.append(type as never, data as never)
+    } catch {
+      /* 会话已关闭等：流式呈现不阻断 */
+    }
+  }
+  const flushStoryDeltas = (): void => {
+    storyTimer = null
+    for (const [chapter, text] of storyDeltaBuffer) {
+      pushStory('novel/story-delta', { projectId, chapter, delta: text })
+    }
+    storyDeltaBuffer.clear()
+  }
+  const scheduleStoryFlush = (): void => {
+    if (storyTimer !== null) return
+    storyTimer = setTimeout(flushStoryDeltas, STORY_DELTA_WINDOW_MS)
+  }
+  const handleStoryEvent = (event: { type: string; chapter?: number; [key: string]: unknown }): void => {
+    if (typeof event.chapter !== 'number') return
+    if (event.type === 'novel.story-start') {
+      pushStory('novel/story-start', {
+        projectId,
+        chapter: event.chapter,
+        ...(event.title !== undefined ? { title: String(event.title) } : {}),
+      })
+      return
+    }
+    if (event.type === 'novel.story-delta') {
+      const delta = typeof event.delta === 'string' ? event.delta : ''
+      if (delta.length === 0) return
+      storyDeltaBuffer.set(event.chapter, (storyDeltaBuffer.get(event.chapter) ?? '') + delta)
+      scheduleStoryFlush()
+      return
+    }
+    if (event.type === 'novel.story-finish') {
+      if (storyDeltaBuffer.has(event.chapter)) {
+        pushStory('novel/story-delta', { projectId, chapter: event.chapter, delta: storyDeltaBuffer.get(event.chapter) ?? '' })
+        storyDeltaBuffer.delete(event.chapter)
+      }
+      pushStory('novel/story-finish', {
+        projectId,
+        chapter: event.chapter,
+        ...(typeof event.score === 'number' ? { score: event.score } : {}),
+        ...(event.isolated === true ? { isolated: true } : {}),
+      })
+    }
+  }
+
   void registerNovelSessionEvents().then((ready) => {
     if (!ready) return
     bind()
@@ -205,6 +268,10 @@ export function attachProgressFeed(
   return app.onPipelineEvent((event) => {
     if (!sessionEventTypesReady) return
     if ((event as { projectId?: string }).projectId !== projectId) return
+    if (event.type.startsWith('novel.story-')) {
+      handleStoryEvent(event as unknown as { type: string; chapter?: number; [key: string]: unknown })
+      return
+    }
     if (!MILESTONE_EVENTS.has(event.type)) return
     push(milestoneNote(event))
   })
@@ -219,5 +286,11 @@ declare module '@deepseek-ai/dsh-session/types' {
     'novel/progress-start': { projectId: string; name: string }
     /** 小说进度快照（latest-write-wins）：由客户端卡片折叠为实时进度视图。 */
     'novel/progress': NovelProgressEventData
+    /** 正文流式卡起始帧：第 N 章正文开始逐字流出（log-only，不进模型历史）。 */
+    'novel/story-start': { projectId: string; chapter: number; title?: string }
+    /** 正文流式增量帧（80ms 聚合窗口）：客户端累积到对应章的卡片正文。 */
+    'novel/story-delta': { projectId: string; chapter: number; delta: string }
+    /** 正文流式收束帧：终稿评分（如通过审查）与隔离标记（如超限）。 */
+    'novel/story-finish': { projectId: string; chapter: number; score?: number; isolated?: boolean }
   }
 }

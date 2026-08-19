@@ -46,6 +46,9 @@ export class WebhookNotifier {
   handleEvent(event: DomainEvent): void {
     for (const s of this.subscribers) s(event)
     if (!this.url) return
+    // 高频流式帧（正文逐字增量）不进聚合推送：正文在聊天会话内实时呈现，
+    // webhook 只关注阶段级里程碑（start/finish 仍入）。
+    if (event.type === 'novel.story-delta') return
     if (event.type === 'pipeline.completed' || event.type === 'pipeline.aborted' || event.type === 'pipeline.error') {
       this.buffer.push(event)
       void this.flush('critical')

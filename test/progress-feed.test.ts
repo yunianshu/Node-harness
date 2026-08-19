@@ -21,6 +21,9 @@ class RecordingSession implements SessionAppender {
 
   append(type: 'novel/progress-start', data: { projectId: string; name: string }): unknown
   append(type: 'novel/progress', data: NovelProgressEventData): unknown
+  append(type: 'novel/story-start', data: { projectId: string; chapter: number; title?: string }): unknown
+  append(type: 'novel/story-delta', data: { projectId: string; chapter: number; delta: string }): unknown
+  append(type: 'novel/story-finish', data: { projectId: string; chapter: number; score?: number; isolated?: boolean }): unknown
   append(type: string, data: unknown): unknown {
     this.events.push({ type, data })
     return undefined
@@ -61,10 +64,17 @@ function makeGateway(): ModelGateway {
       }
       return { content: JSON.stringify({ score: 8, issues: [], styleDeviation: 'none' }), finishReason: 'stop', usage: null, raw: {} }
     },
-    // Task #10 后 writer 走流式面：聚合后一次性回调（非 dsh 模型无真实增量）
+    // Task #10 后 writer 走流式面：分片回调增量（模拟真实 dsh 逐字流，验证 delta 聚合窗口合并）；
+    // 非 writer 角色聚合后一次性回调全文
     async invokeStream(role, request, ctx, onDelta) {
       const res = await this.invoke(role, request, ctx)
-      onDelta?.(res.content)
+      if (role === 'writer' && onDelta && typeof res.content === 'string') {
+        for (let i = 0; i < res.content.length; i += 120) {
+          onDelta(res.content.slice(i, i + 120))
+        }
+      } else {
+        onDelta?.(res.content)
+      }
       return res
     },
   }
@@ -132,5 +142,45 @@ describe('NovelProgressFeed（会话进度供给）', () => {
     expect(session.events.length).toBeGreaterThan(before)
     detach()
     detach2()
+  })
+
+  it('forwards chapter writing as streamed story cards (start → aggregated deltas → finish with score)', { timeout: 60_000 }, async () => {
+    await registerNovelSessionEvents()
+    const created = await app.projects.create(
+      { name: '流式测试', premise: '一个关于刀客与旧案的故事，雪夜长街，故人重逢，真相渐近', totalChapters: 2, stylePackId: 'gulong' },
+      'test',
+    )
+    const session = new RecordingSession()
+    const detach = attachProgressFeed(app, session, created.project.projectId)
+
+    await app.startProject(created.project.projectId)
+    const deadline = Date.now() + 60_000
+    while (Date.now() < deadline) {
+      const proj = await app.projects.loadProject(created.project.projectId)
+      const finishCount = session.events.filter((e) => e.type === 'novel/story-finish').length
+      if (proj.status === 'completed' && finishCount >= 2) break
+      await new Promise((r) => setTimeout(r, 100))
+    }
+
+    const starts = session.events.filter((e) => e.type === 'novel/story-start') as { data?: { projectId: string; chapter: number } }[]
+    const deltas = session.events.filter((e) => e.type === 'novel/story-delta') as { data?: { projectId: string; chapter: number; delta: string } }[]
+    const finishes = session.events.filter((e) => e.type === 'novel/story-finish') as { data?: { projectId: string; chapter: number; score?: number; isolated?: boolean } }[]
+
+    expect(starts).toHaveLength(2)
+    expect(starts.map((s) => s.data!.chapter).sort()).toEqual([1, 2])
+    expect(finishes).toHaveLength(2)
+
+    // 分片增量（每片 120 字符）被聚合窗口合并为少量会话帧；拼接后即为该章全文
+    for (const ch of [1, 2]) {
+      const texts = deltas.filter((d) => d.data!.chapter === ch).map((d) => d.data!.delta)
+      expect(texts.length).toBeGreaterThan(0)
+      const joined = texts.join('')
+      expect(joined.length).toBeGreaterThan(1000)
+      expect(joined).toContain('这一夜的风')
+      const finish = finishes.find((f) => f.data!.chapter === ch)
+      expect(typeof finish!.data!.score).toBe('number')
+      expect(finish!.data!.isolated).toBeUndefined()
+    }
+    detach()
   })
 })
