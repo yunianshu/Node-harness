@@ -28,6 +28,24 @@ export function parseDshModel(model: string): { provider: string; model: string 
   return { provider, model: rest }
 }
 
+/**
+ * 剥离 dsh 推理模型（GLM-5.x 等）输出中的思考段。
+ * zai-coding-cn 端点把推理流内联进 text-delta，每个推理 token 被 `[思考]` 包裹
+ * （`[思考]X[思考]`），真答案在末尾无包裹；故取最后一个 `[思考]` 之后的内容，
+ * 再清理推理尾巴残留的标点/空白。兼容通用 `<think>…</think>` 块（未闭合一并丢弃）。
+ * 无推理标记时原样返回。
+ */
+export function stripDshReasoning(content: string): string {
+  let out = content
+    .replace(/<think>[\s\S]*?<\/think>/g, '')
+    .replace(/<think>[\s\S]*$/, '')
+  const last = out.lastIndexOf('[思考]')
+  if (last >= 0) {
+    out = out.slice(last + '[思考]'.length)
+  }
+  return out.replace(/^[\s。！？；：、，,\.．'’“”"」『』…—-]+/, '')
+}
+
 export interface ModelGatewayOptions {
   registry: ProviderRegistry
   limiter: GlobalRateLimiter
@@ -241,7 +259,7 @@ export class ModelGateway {
     request: LlmRequest,
     onDelta?: (text: string) => void,
   ): Promise<ChatResponse> {
-    let content = ''
+    let raw = ''
     let finish: 'stop' | 'length' | 'error' | 'aborted' = 'stop'
     let errorMsg = ''
     for await (const delta of this.options.host.llm.stream({
@@ -252,16 +270,16 @@ export class ModelGateway {
       temperature: request.params?.temperature ?? binding.temperature,
       maxTokens: request.params?.maxOutputTokens ?? binding.maxOutputTokens,
     })) {
-      if (delta.text) {
-        content += delta.text
-        onDelta?.(delta.text)
-      }
+      if (delta.text) raw += delta.text
       if (delta.finish) finish = delta.finish
       if (delta.error) errorMsg = delta.error
     }
     if (finish === 'error' || finish === 'aborted') {
       throw new Error(errorMsg || `dsh 模型调用${finish === 'aborted' ? '中止' : '失败'}`)
     }
+    // 聚合后统一剥离推理块（Task #8 流式正文再做增量剥离），回调剥离后的完整文本
+    const content = stripDshReasoning(raw)
+    onDelta?.(content)
     return { content, finishReason: finish === 'length' ? 'length' : 'stop', usage: null, raw: null }
   }
 

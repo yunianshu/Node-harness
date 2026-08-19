@@ -6,7 +6,7 @@ import { FakeHost } from '../../src/host/dsh-adapter'
 import type { HostLlmDelta, HostLlmRequest } from '../../src/host/types'
 import { ChannelManager } from '../../src/model/fallback'
 import { ModelExhaustedError } from '../../src/model/errors'
-import { ModelGateway, parseDshModel } from '../../src/model/gateway'
+import { ModelGateway, parseDshModel, stripDshReasoning } from '../../src/model/gateway'
 import { DSL_PROVIDER, ProviderRegistry } from '../../src/model/registry'
 import { GlobalRateLimiter } from '../../src/model/rate-limiter'
 import { defaultDshBindings } from '../../src/project/service'
@@ -76,13 +76,13 @@ describe('dsh 模型执行器（gateway dsh 分支）', () => {
     })
   })
 
-  it('invokeStream 逐段回调 onDelta（正文流式呈现基础）', async () => {
+  it('invokeStream 聚合后回调剥离的完整文本（正文流式 Task #8 前暂为一次性）', async () => {
     const dsh = fakeDshLlm([[{ text: '第' }, { text: '一' }, { text: '章', finish: 'stop' }]])
     const { gateway } = await setup(dsh)
     gateway.setBindings([dshBinding])
     const chunks: string[] = []
     const res = await gateway.invokeStream('writer', { user: '写' }, { projectId: 'p1' }, (t) => chunks.push(t))
-    expect(chunks).toEqual(['第', '一', '章'])
+    expect(chunks).toEqual(['第一章'])
     expect(res.content).toBe('第一章')
   })
 
@@ -111,6 +111,33 @@ describe('dsh 模型执行器（gateway dsh 分支）', () => {
     const err = await gateway.invoke('writer', { user: '写' }, { projectId: 'p1' }).catch((e) => e)
     expect(err).toBeInstanceOf(ModelExhaustedError)
     expect(err.trail).toHaveLength(2)
+  })
+
+  it('invoke 对推理模型输出剥离 [思考] 块，只留末尾真答案', async () => {
+    // 模拟 zai-coding-cn 端点把推理流内联进 text-delta：每个推理 token 被 [思考] 包裹，真答案在末尾
+    const dsh = fakeDshLlm([[{ text: '[思考] 拆[思考] 解[思考] 用[思考] 户[思考] 请[思考] 求[思考]  。我是一个在庞大文本上训练的大型语言模型，旨在帮助您。', finish: 'stop' }]])
+    const { gateway } = await setup(dsh)
+    gateway.setBindings([dshBinding])
+    const res = await gateway.invoke('writer', { user: '写' }, { projectId: 'p1' })
+    expect(res.content).toBe('我是一个在庞大文本上训练的大型语言模型，旨在帮助您。')
+  })
+})
+
+describe('stripDshReasoning（推理块剥离）', () => {
+  it('剥离 GLM [思考] 内联推理块（真实输出形态）', () => {
+    const out = stripDshReasoning(
+      '[思考] 1[思考] .[思考]  [思考]  **[思考] 拆[思考] 解[思考] 用户[思考] 请求[思考] 。我是一个在庞大文本和代码数据集上训练的大型语言模型，能够理解和生成类人文本，旨在通过回答问题、提供信息和进行创意写作来帮助您。"',
+    )
+    expect(out).toBe('我是一个在庞大文本和代码数据集上训练的大型语言模型，能够理解和生成类人文本，旨在通过回答问题、提供信息和进行创意写作来帮助您。"')
+  })
+
+  it('无推理标记原样返回', () => {
+    expect(stripDshReasoning('纯正文，无思考块。')).toBe('纯正文，无思考块。')
+  })
+
+  it('剥离通用 <think> 块（含未闭合尾巴）', () => {
+    expect(stripDshReasoning('<think>推理过程</think>正文内容')).toBe('正文内容')
+    expect(stripDshReasoning('<think>未闭合推理尾巴')).toBe('')
   })
 })
 
