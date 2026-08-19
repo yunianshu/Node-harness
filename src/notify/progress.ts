@@ -108,6 +108,120 @@ export async function queryProgress(
   }
 }
 
+/** 目录卡单章条目（title 缺省表示章纲未产出；score 缺省表示尚无审查报告）。 */
+export interface NovelTocEntry {
+  chapter: number
+  title: string | null
+  stage: string
+  score?: number
+  isolated: boolean
+  /** 终稿正文字数（默认不计算，仅 includeWordCount 时读取）。 */
+  wordCount?: number
+}
+
+/** 会话内小说目录卡快照（latest-write-wins，产物即真相，不落 toc.json）。 */
+export interface NovelToc {
+  projectId: string
+  name: string
+  status: string
+  totalChapters: number
+  /** 章纲审查完成数（= progress.stages.outline.done）。 */
+  outlineDone: number
+  /** 终稿完成数（= progress.stages.final.done）。 */
+  finalDone: number
+  isolated: number[]
+  entries: NovelTocEntry[]
+  updatedAt: string
+}
+
+/**
+ * 从落盘产物实时重建小说目录（产物即真相，不新增 toc.json 落盘文件）。
+ * 复用调用方已算出的 ProgressView（app.status 内含 queryProgress），不二次全量扫描；
+ * 章标题/评分只对产物命中的章按需 readFile（Promise.all 并行），绝不逐章探测。
+ */
+export async function buildToc(
+  paths: ProjectPaths,
+  project: { name: string; totalChapters: number; status: string },
+  progress: ProgressView,
+  options: { includeWordCount?: boolean } = {},
+): Promise<NovelToc> {
+  const [outlineNames, reviewNames, finalNames] = await Promise.all([
+    listJson(paths.chapters.outline),
+    listJson(paths.chapters.review),
+    listTxt(paths.chapters.final),
+  ])
+  const outlineBy = new Map<number, string>()
+  const reviewBy = new Map<number, string>()
+  const finalSet = new Set<number>()
+  for (const f of outlineNames) {
+    const m = f.match(/^chapter_(\d{4})\.json$/)
+    if (m) outlineBy.set(Number(m[1]), f)
+  }
+  for (const f of reviewNames) {
+    const m = f.match(/^chapter_(\d{4})_review\.json$/)
+    if (m) reviewBy.set(Number(m[1]), f)
+  }
+  for (const f of finalNames) {
+    const m = f.match(/^chapter_(\d{4})\.txt$/)
+    if (m) finalSet.add(Number(m[1]))
+  }
+
+  const readTitle = async (ch: number): Promise<string | null> => {
+    const file = outlineBy.get(ch)
+    if (file === undefined) return null
+    const raw = await readFile(join(paths.chapters.outline, file), 'utf-8').catch(() => '')
+    try {
+      const v = (JSON.parse(raw) as { title?: unknown }).title
+      return typeof v === 'string' && v.length > 0 ? v : null
+    } catch {
+      return null
+    }
+  }
+  const readScore = async (ch: number): Promise<number | undefined> => {
+    const file = reviewBy.get(ch)
+    if (file === undefined) return undefined
+    const raw = await readFile(join(paths.chapters.review, file), 'utf-8').catch(() => '')
+    try {
+      const s = (JSON.parse(raw) as { score?: unknown }).score
+      return typeof s === 'number' ? s : undefined
+    } catch {
+      return undefined
+    }
+  }
+
+  const entries = await Promise.all(
+    Array.from({ length: progress.totalChapters }, async (_x, i) => {
+      const ch = i + 1
+      const pc = progress.chapters[i]
+      const [title, score] = await Promise.all([readTitle(ch), readScore(ch)])
+      const entry: NovelTocEntry = {
+        chapter: ch,
+        title,
+        stage: pc?.currentStage ?? '规划',
+        ...(score !== undefined ? { score } : {}),
+        isolated: pc?.isolated ?? false,
+      }
+      if (options.includeWordCount && finalSet.has(ch)) {
+        const text = await readFile(join(paths.chapters.final, `${chapterFile(ch)}.txt`), 'utf-8').catch(() => '')
+        entry.wordCount = text.replace(/\s/g, '').length
+      }
+      return entry
+    }),
+  )
+
+  return {
+    projectId: progress.projectId,
+    name: project.name,
+    status: project.status,
+    totalChapters: progress.totalChapters,
+    outlineDone: progress.stages.outline.done,
+    finalDone: progress.stages.final.done,
+    isolated: progress.chapters.filter((c) => c.isolated).map((c) => c.chapter),
+    entries,
+    updatedAt: new Date().toISOString(),
+  }
+}
+
 export async function buildSummaryReport(
   paths: ProjectPaths,
   name: string,

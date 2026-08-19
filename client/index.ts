@@ -7,7 +7,8 @@ import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import { NovelProgressPanel } from './NovelProgressPanel.tsx'
 import { NovelStoryCard } from './NovelStoryCard.tsx'
-import { novelProgressDefinition, novelStoryDefinition } from './definition.ts'
+import { NovelTocCard } from './NovelTocCard.tsx'
+import { novelProgressDefinition, novelStoryDefinition, novelTocDefinition } from './definition.ts'
 
 export const name = 'novel-harness-client'
 
@@ -28,4 +29,11 @@ export function apply(ctx: ClientContext): void {
     key: 'novel-story',
     priority: 5,
   }, NovelStoryCard)), 'novel-story: chat renderer')
+
+  ctx.effect(() => ctx.conversationEvents.register(novelTocDefinition), 'novel-toc: definition')
+  ctx.effect(() => ctx.slots.inject('conversation.chat.node', () => ctx.slots.register({
+    name: 'conversation.chat.node',
+    key: 'novel-toc',
+    priority: 5,
+  }, NovelTocCard)), 'novel-toc: chat renderer')
 }

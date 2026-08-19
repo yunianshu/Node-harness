@@ -1,4 +1,5 @@
 import type { NovelHarnessApp } from './app.js'
+import { buildToc, type NovelToc } from './notify/progress.js'
 
 /**
  * 会话进度供给：把流水线里程碑以 novel/progress 会话事件（快照语义，
@@ -36,6 +37,8 @@ export interface SessionAppender {
   append(type: 'novel/story-reset', data: { projectId: string; chapter: number }): unknown
   append(type: 'novel/story-delta', data: { projectId: string; chapter: number; delta: string }): unknown
   append(type: 'novel/story-finish', data: { projectId: string; chapter: number; score?: number; isolated?: boolean }): unknown
+  append(type: 'novel/toc-start', data: { projectId: string; name: string }): unknown
+  append(type: 'novel/toc', data: NovelToc): unknown
 }
 
 /** 正文流式增量帧的聚合窗口（ms）：高频 delta 累积后按窗口推一帧，避免刷爆会话日志。 */
@@ -103,17 +106,14 @@ interface StatusLike {
 /** 最近过程事件保留条数（呈现步骤流转，新→旧）。 */
 const RECENT_LIMIT = 8
 
-async function snapshotOf(
-  app: NovelHarnessApp,
+/** 进度卡事件载荷构造（纯函数）：project/status 已由调用方加载，双快照共用一次产物扫描。 */
+function progressEventDataOf(
   projectId: string,
+  project: { name: string; totalChapters: number; status: string },
+  status: StatusLike,
   note?: string,
   recent?: NovelProgressEventData['recent'],
-): Promise<NovelProgressEventData | null> {
-  const [project, status] = await Promise.all([
-    app.projects.loadProject(projectId).catch(() => null),
-    app.status(projectId).catch(() => null),
-  ])
-  if (project === null || status === null) return null
+): NovelProgressEventData {
   const s = status as StatusLike
   const activeChapters = (s.chapters ?? [])
     .filter((c) => !c.isolated && c.currentStage !== undefined && c.currentStage !== '已完成' && c.currentStage !== '已隔离')
@@ -158,6 +158,8 @@ export const NOVEL_SESSION_EVENT_TYPES = [
   'novel/story-reset',
   'novel/story-delta',
   'novel/story-finish',
+  'novel/toc-start',
+  'novel/toc',
 ] as const
 
 /** 宿主解析的可注入面：单测传入桩 resolve/load，避免依赖真实文件布局。 */
@@ -271,13 +273,30 @@ export function attachProgressFeed(
       /* 会话已关闭等：进度推送不阻断 */
     }
   }
+  const appendToc = (data: NovelToc): void => {
+    try {
+      session.append('novel/toc', data)
+    } catch {
+      /* 会话已关闭等：目录推送不阻断 */
+    }
+  }
   const push = (note?: string): void => {
     if (note !== undefined) {
       recent = [{ time: new Date().toISOString().slice(11, 19), note }, ...recent].slice(0, RECENT_LIMIT)
     }
-    void snapshotOf(app, projectId, note, recent).then((snapshot) => {
-      if (snapshot !== null) appendSnapshot(snapshot)
-    })
+    // 进度卡与目录卡共用同一次产物扫描：loadProject + status（内含 queryProgress）+ pathsOf
+    // 一次到位，buildToc 复用其 ProgressView，避免 queryProgress 全量跑两遍。
+    void (async () => {
+      const [project, status, paths] = await Promise.all([
+        app.projects.loadProject(projectId).catch(() => null),
+        app.status(projectId).catch(() => null),
+        app.pathsOf(projectId).catch(() => null),
+      ])
+      if (project === null || status === null || paths === null) return
+      appendSnapshot(progressEventDataOf(projectId, project, status, note, recent))
+      const toc = await buildToc(paths, project, status).catch(() => null)
+      if (toc !== null) appendToc(toc)
+    })()
   }
 
   const bind = (): void => {
@@ -301,6 +320,20 @@ export function attachProgressFeed(
           }
         } catch {
           /* 同上 */
+        }
+        // 目录卡开卡守卫与进度卡同构；只查 novel/toc-start（不查 progress-start）——
+        // 旧会话（仅 progress-start、无 toc-start）重载后再 attach 会补开目录卡，行为正确。
+        const alreadyTocStarted = (session.events ?? []).some(
+          (e) =>
+            e.type === 'novel/toc-start' &&
+            (e.data as { projectId?: string } | undefined)?.projectId === projectId,
+        )
+        try {
+          if (!alreadyTocStarted) {
+            session.append('novel/toc-start', { projectId, name: project.name })
+          }
+        } catch {
+          /* 会话已关闭等：不阻断 */
         }
         push()
       })
@@ -420,5 +453,9 @@ declare module '@deepseek-ai/dsh-session/types' {
     'novel/story-delta': { projectId: string; chapter: number; delta: string }
     /** 正文流式收束帧：终稿评分（如通过审查）与隔离标记（如超限）。 */
     'novel/story-finish': { projectId: string; chapter: number; score?: number; isolated?: boolean }
+    /** 小说目录卡起始帧：在发起命令的会话上打开一张目录卡（log-only，不进模型历史）。 */
+    'novel/toc-start': { projectId: string; name: string }
+    /** 小说目录快照（latest-write-wins）：目录数据从落盘产物实时重建（产物即真相）。 */
+    'novel/toc': NovelToc
   }
 }

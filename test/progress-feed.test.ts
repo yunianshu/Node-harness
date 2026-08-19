@@ -19,6 +19,7 @@ import {
   resolveHostSessionModule,
 } from '../src/progress-feed'
 import type { NovelProgressEventData, SessionAppender } from '../src/progress-feed'
+import type { NovelToc } from '../src/notify/progress'
 import type { ModelGateway, LlmRequest, InvokeContext } from '../src/model/gateway'
 import type { PipelineRole } from '../src/project/schema'
 import { diverseParagraphText, resetCounter } from './helpers/text'
@@ -32,6 +33,8 @@ class RecordingSession implements SessionAppender {
   append(type: 'novel/story-reset', data: { projectId: string; chapter: number }): unknown
   append(type: 'novel/story-delta', data: { projectId: string; chapter: number; delta: string }): unknown
   append(type: 'novel/story-finish', data: { projectId: string; chapter: number; score?: number; isolated?: boolean }): unknown
+  append(type: 'novel/toc-start', data: { projectId: string; name: string }): unknown
+  append(type: 'novel/toc', data: NovelToc): unknown
   append(type: string, data: unknown): unknown {
     this.events.push({ type, data })
     return undefined
@@ -201,6 +204,52 @@ describe('NovelProgressFeed（会话进度供给）', () => {
       expect(finish!.data!.isolated).toBeUndefined()
     }
     detach()
+  })
+
+  it('pushes toc snapshots to a bound session (toc-start once, toc refreshes)', { timeout: 60_000 }, async () => {
+    await registerNovelSessionEvents()
+    const created = await app.projects.create(
+      { name: '目录测试', premise: '一个关于刀客与旧案的故事，雪夜长街，故人重逢，真相渐近', totalChapters: 2, stylePackId: 'gulong' },
+      'test',
+    )
+    const session = new RecordingSession()
+    const detach = attachProgressFeed(app, session, created.project.projectId)
+
+    await app.startProject(created.project.projectId)
+    const deadline = Date.now() + 60_000
+    while (Date.now() < deadline) {
+      const proj = await app.projects.loadProject(created.project.projectId)
+      const tocs = session.events.filter((e) => e.type === 'novel/toc') as { data?: NovelToc }[]
+      const lastStatus = tocs[tocs.length - 1]?.data?.status
+      if (proj.status === 'completed' && lastStatus === 'completed') break
+      await new Promise((r) => setTimeout(r, 100))
+    }
+
+    const starts = session.events.filter((e) => e.type === 'novel/toc-start')
+    expect(starts).toHaveLength(1)
+    expect((starts[0].data as { projectId: string }).projectId).toBe(created.project.projectId)
+
+    const snapshots = session.events.filter((e) => e.type === 'novel/toc') as { data?: NovelToc }[]
+    expect(snapshots.length).toBeGreaterThanOrEqual(1)
+    const last = snapshots[snapshots.length - 1].data!
+    expect(last.status).toBe('completed')
+    expect(last.totalChapters).toBe(2)
+    expect(last.name).toBe('目录测试')
+    // 目录条目随产物重建：两章齐全、终稿章 stage=已完成、章纲标题非空
+    expect(last.entries).toHaveLength(2)
+    expect(last.entries.every((e) => typeof e.title === 'string' && e.title.length > 0)).toBe(true)
+    expect(last.entries.filter((e) => e.stage === '已完成')).toHaveLength(2)
+    expect(last.finalDone).toBe(2)
+    expect(last.isolated).toEqual([])
+
+    // 重复 attach：不重复开卡，仅刷新 toc 快照
+    const before = session.events.length
+    const detach2 = attachProgressFeed(app, session, created.project.projectId)
+    await new Promise((r) => setTimeout(r, 300))
+    expect(session.events.filter((e) => e.type === 'novel/toc-start')).toHaveLength(1)
+    expect(session.events.length).toBeGreaterThan(before)
+    detach()
+    detach2()
   })
 
   it('never appends a second story-start for the same (project, chapter) across re-attach', async () => {

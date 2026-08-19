@@ -12,7 +12,7 @@ import type { SessionAppender } from '../src/progress-feed'
 /** 记录会话 append：验证进度/正文流式事件是否写入会话日志。 */
 class RecordingSession implements SessionAppender {
   readonly events: Array<{ type: string; data?: unknown }> = []
-  append(type: 'novel/progress-start' | 'novel/progress' | 'novel/story-start' | 'novel/story-delta' | 'novel/story-finish', data: unknown): unknown {
+  append(type: 'novel/progress-start' | 'novel/progress' | 'novel/story-start' | 'novel/story-reset' | 'novel/story-delta' | 'novel/story-finish' | 'novel/toc-start' | 'novel/toc', data: unknown): unknown {
     this.events.push({ type, data })
     return undefined
   }

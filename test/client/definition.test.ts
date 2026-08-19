@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { novelStoryDefinition, type NovelStoryState } from '../../client/definition'
+import {
+  novelStoryDefinition,
+  novelTocDefinition,
+  type NovelStoryState,
+  type NovelTocState,
+} from '../../client/definition'
+import type { NovelToc } from '../../src/notify/progress'
 
 /**
  * novel/story-reset 客户端语义：regen/重试重写同一章时，feed 发 story-reset 清空
@@ -67,5 +73,83 @@ describe('novelStoryDefinition（正文流式卡）', () => {
   it('不相关类型事件透传 state 原样（update 保守）', () => {
     const next = runUpdate(FINISHED, { type: 'unrelated', data: {} })
     expect(next).toBe(FINISHED)
+  })
+})
+
+// ---- novel/toc 目录卡 ----
+
+/** toc 卡 update() 的 context/match 桥接（与 story 卡同构）。 */
+function tocRunUpdate(state: NovelTocState, event: { type: string; data: Record<string, unknown> }): NovelTocState {
+  const context = { state } as unknown as Parameters<typeof novelTocDefinition.update>[0]
+  const match = { event } as unknown as Parameters<typeof novelTocDefinition.update>[1]
+  return novelTocDefinition.update(context, match) as NovelTocState
+}
+
+function tocEvent(type: string, data: Record<string, unknown>): Parameters<typeof novelTocDefinition.match>[0] {
+  return { type, seq: 1, time: 1, data } as Parameters<typeof novelTocDefinition.match>[0]
+}
+
+const TOC: NovelToc = {
+  projectId: 'p',
+  name: '测试书',
+  status: 'generating',
+  totalChapters: 2,
+  outlineDone: 1,
+  finalDone: 0,
+  isolated: [2],
+  entries: [
+    { chapter: 1, title: '雪夜', stage: '正文写作', isolated: false },
+    { chapter: 2, title: '旧案', stage: '章纲审查', isolated: true },
+  ],
+  updatedAt: '2026-08-19T00:00:00.000Z',
+}
+
+describe('novelTocDefinition（目录卡）', () => {
+  it('match 将 toc-start 开卡、toc 归为 update，无关类型不命中', () => {
+    expect(novelTocDefinition.match(tocEvent('novel/toc-start', { projectId: 'p', name: '测试书' }))).toEqual({ id: 'p', role: 'start' })
+    expect(novelTocDefinition.match(tocEvent('novel/toc', TOC as unknown as Record<string, unknown>))).toEqual({ id: 'p', role: 'update' })
+    expect(novelTocDefinition.match(tocEvent('novel/progress', {}))).toBeNull()
+  })
+
+  it('start 以 toc-start 开卡并置空快照（后续 toc 帧整体替换）', () => {
+    const start = novelTocDefinition.start
+    const ctx = {} as unknown as Parameters<typeof start>[0]
+    const reader = {} as unknown as Parameters<typeof start>[2]
+    const startMatch = { event: tocEvent('novel/toc-start', { projectId: 'p', name: '测试书' }) } as unknown as Parameters<typeof start>[1]
+    expect(start(ctx, startMatch, reader)).toEqual({ name: '测试书', snapshot: null })
+    const badMatch = { event: tocEvent('novel/toc', TOC as unknown as Record<string, unknown>) } as unknown as Parameters<typeof start>[1]
+    expect(() => start(ctx, badMatch, reader)).toThrow(/novel\/toc-start/)
+  })
+
+  it('update 遇 novel/toc 整体替换快照（latest-write-wins）', () => {
+    const base: NovelTocState = { name: '测试书', snapshot: null }
+    const next = tocRunUpdate(base, { type: 'novel/toc', data: TOC as unknown as Record<string, unknown> })
+    expect(next.snapshot).toBe(TOC)
+    expect(next.name).toBe('测试书')
+  })
+
+  it('update 对无关事件透传 state 原样', () => {
+    const base: NovelTocState = { name: '测试书', snapshot: TOC }
+    const next = tocRunUpdate(base, { type: 'unrelated', data: {} })
+    expect(next).toBe(base)
+  })
+
+  it('buildViewNode：快照为空不渲染，有快照以快照为载荷', () => {
+    const buildViewNode = novelTocDefinition.buildViewNode!
+    type TocBuildViewNode = NonNullable<typeof novelTocDefinition.buildViewNode>
+    const startEvent = tocEvent('novel/toc-start', { projectId: 'p', name: '测试书' })
+    const ctxEmpty = { start: { event: startEvent } } as unknown as Parameters<TocBuildViewNode>[0]
+    expect(buildViewNode(ctxEmpty)).toBeNull()
+
+    const ctx = {
+      start: { event: startEvent },
+      state: { name: '测试书', snapshot: TOC },
+      key: 'k',
+      id: 'p',
+    } as unknown as Parameters<TocBuildViewNode>[0]
+    const node = buildViewNode(ctx)
+    expect(node).not.toBeNull()
+    expect(node!.kind).toBe('novel-toc')
+    expect(node!.data).toBe(TOC)
   })
 })
