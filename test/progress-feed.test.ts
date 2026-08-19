@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -10,7 +10,14 @@ vi.mock('@deepseek-ai/dsh-session', () => ({
 
 import { NovelHarnessApp } from '../src/app'
 import { FakeHost } from '../src/host/dsh-adapter'
-import { attachProgressFeed, registerNovelSessionEvents } from '../src/progress-feed'
+import {
+  attachProgressFeed,
+  NOVEL_SESSION_EVENT_TYPES,
+  registerNovelSessionEvents,
+  registerNovelSessionEventsInto,
+  resetSessionEventTypesRegistration,
+  resolveHostSessionModule,
+} from '../src/progress-feed'
 import type { NovelProgressEventData, SessionAppender } from '../src/progress-feed'
 import type { ModelGateway, LlmRequest, InvokeContext } from '../src/model/gateway'
 import type { PipelineRole } from '../src/project/schema'
@@ -22,6 +29,7 @@ class RecordingSession implements SessionAppender {
   append(type: 'novel/progress-start', data: { projectId: string; name: string }): unknown
   append(type: 'novel/progress', data: NovelProgressEventData): unknown
   append(type: 'novel/story-start', data: { projectId: string; chapter: number; title?: string }): unknown
+  append(type: 'novel/story-reset', data: { projectId: string; chapter: number }): unknown
   append(type: 'novel/story-delta', data: { projectId: string; chapter: number; delta: string }): unknown
   append(type: 'novel/story-finish', data: { projectId: string; chapter: number; score?: number; isolated?: boolean }): unknown
   append(type: string, data: unknown): unknown {
@@ -86,6 +94,8 @@ describe('NovelProgressFeed（会话进度供给）', () => {
 
   beforeEach(async () => {
     resetCounter()
+    // 重置事件类型注册闩：保证每个用例都重新走注册路径（否则首个用例置位后其余用例不再注册）
+    resetSessionEventTypesRegistration()
     root = await mkdtemp(join(tmpdir(), 'progress-feed-'))
     app = new NovelHarnessApp({ dataRoot: root, host: new FakeHost(root), gateway: makeGateway() })
   })
@@ -96,6 +106,15 @@ describe('NovelProgressFeed（会话进度供给）', () => {
 
   it('registers session event types before use', async () => {
     await expect(registerNovelSessionEvents()).resolves.toBe(true)
+    // 只断言返回 true 无法覆盖"写入的正是回放读取的宿主 Set"：直接读被 mock 的模块，
+    // 校验全部 novel 事件类型（含 story-reset）已实际落入 KNOWN_SESSION_EVENT_TYPES
+    // （真实模块类型为 ReadonlySet，故经 unknown 桥接）
+    const mod = (await import('@deepseek-ai/dsh-session')) as unknown as {
+      KNOWN_SESSION_EVENT_TYPES?: Set<string>
+    }
+    const known = mod.KNOWN_SESSION_EVENT_TYPES
+    expect(known).toBeDefined()
+    for (const t of NOVEL_SESSION_EVENT_TYPES) expect(known!.has(t)).toBe(true)
   })
 
   it('pushes milestone snapshots to a bound session and survives re-attach without duplicate start', { timeout: 60_000 }, async () => {
@@ -228,5 +247,182 @@ describe('NovelProgressFeed（会话进度供给）', () => {
     expect(session.events.filter((e) => e.type === 'novel/story-start')).toHaveLength(2)
     detach1()
     detach2()
+  })
+})
+
+describe('宿主 dsh-session 实例解析（根因修复的自动化覆盖）', () => {
+  let root: string
+  let app: NovelHarnessApp
+
+  beforeEach(async () => {
+    resetCounter()
+    resetSessionEventTypesRegistration()
+    root = await mkdtemp(join(tmpdir(), 'host-session-test-'))
+    app = new NovelHarnessApp({ dataRoot: root, host: new FakeHost(root), gateway: makeGateway() })
+  })
+
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true })
+  })
+
+  it('registerNovelSessionEventsInto 向给定 Set 写入全部 novel 事件类型', () => {
+    const known = new Set(['turn/start'])
+    expect(registerNovelSessionEventsInto({ KNOWN_SESSION_EVENT_TYPES: known })).toBe(true)
+    for (const t of NOVEL_SESSION_EVENT_TYPES) expect(known.has(t)).toBe(true)
+  })
+
+  it('registerNovelSessionEventsInto 对 null / 缺 add 的模块返回 false', () => {
+    expect(registerNovelSessionEventsInto(null)).toBe(false)
+    // 冻结 Set 无法 add（真实宿主若暴露的是只读集合，补注册应失败降级而非抛错）
+    expect(registerNovelSessionEventsInto({ KNOWN_SESSION_EVENT_TYPES: new Set(['x']) })).toBe(true)
+    expect(registerNovelSessionEventsInto({ KNOWN_SESSION_EVENT_TYPES: {} as never })).toBe(false)
+  })
+
+  it('resolveHostSessionModule 注入桩：命中可写 Set 且 registerInto 写入同一实例', async () => {
+    const known = new Set(['turn/start'])
+    const host = await resolveHostSessionModule('C:/fixture/entry.js', {
+      resolve: () => 'C:/fixture/node_modules/@deepseek-ai/dsh-session/lib/index.js',
+      load: async () => ({ KNOWN_SESSION_EVENT_TYPES: known }),
+    })
+    expect(host.ok).toBe(true)
+    if (!host.ok) return
+    expect(host.resolvedPath).toBe('C:/fixture/node_modules/@deepseek-ai/dsh-session/lib/index.js')
+    expect(host.module.KNOWN_SESSION_EVENT_TYPES).toBe(known)
+    expect(registerNovelSessionEventsInto(host.module)).toBe(true)
+    expect(known.has('novel/story-reset')).toBe(true)
+  })
+
+  it('resolveHostSessionModule 解析抛错 / 模块缺导出均返回 ok:false', async () => {
+    const resolveErr = await resolveHostSessionModule('C:/entry.js', {
+      resolve: () => {
+        throw new Error('MODULE_NOT_FOUND')
+      },
+    })
+    expect(resolveErr.ok).toBe(false)
+
+    const missingExport = await resolveHostSessionModule('C:/entry.js', {
+      resolve: () => 'C:/x.js',
+      load: async () => ({}),
+    })
+    expect(missingExport.ok).toBe(false)
+  })
+
+  it('resolveHostSessionModule 真实 createRequire：解析到 fixture 副本且重 import 为同一 Set 实例', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'host-session-fixture-'))
+    try {
+      const pkgDir = join(dir, 'node_modules', '@deepseek-ai', 'dsh-session')
+      const libDir = join(pkgDir, 'lib')
+      await mkdir(libDir, { recursive: true })
+      await writeFile(
+        join(pkgDir, 'package.json'),
+        JSON.stringify({ name: '@deepseek-ai/dsh-session', version: '0.0.0-fixture', type: 'module', main: 'lib/index.mjs' }),
+      )
+      await writeFile(join(libDir, 'index.mjs'), 'export const KNOWN_SESSION_EVENT_TYPES = new Set(["turn/start"])\n')
+      const entry = join(dir, 'entry.mjs')
+      await writeFile(entry, '// 模拟 dsh 进程入口（process.argv[1] 指向该文件）\n')
+
+      const host = await resolveHostSessionModule(entry)
+      expect(host.ok).toBe(true)
+      if (!host.ok) return
+      // win32 下解析路径为反斜杠分隔，统一成正斜杠再断言
+      expect(host.resolvedPath.replace(/\\/g, '/')).toMatch(/\/node_modules\/@deepseek-ai\/dsh-session\/lib\/index\.mjs$/)
+
+      // 身份校验：以同一 file URL 重新 import，Node 按 realpath 缓存应返回同一模块实例（同一 Set）
+      const { pathToFileURL } = await import('node:url')
+      const again = (await import(pathToFileURL(host.resolvedPath).href)) as {
+        KNOWN_SESSION_EVENT_TYPES?: Set<string>
+      }
+      expect(again.KNOWN_SESSION_EVENT_TYPES).toBe(host.module.KNOWN_SESSION_EVENT_TYPES)
+      expect(registerNovelSessionEventsInto(host.module)).toBe(true)
+      expect(again.KNOWN_SESSION_EVENT_TYPES!.has('novel/progress-start')).toBe(true)
+      expect(again.KNOWN_SESSION_EVENT_TYPES!.has('novel/story-reset')).toBe(true)
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('注册失败（宿主缺 KNOWN_SESSION_EVENT_TYPES）时 attach 不追加任何事件', async () => {
+    const mod = (await import('@deepseek-ai/dsh-session')) as unknown as {
+      KNOWN_SESSION_EVENT_TYPES?: Set<string>
+    }
+    const saved = mod.KNOWN_SESSION_EVENT_TYPES
+    mod.KNOWN_SESSION_EVENT_TYPES = undefined
+    try {
+      await expect(registerNovelSessionEvents()).resolves.toBe(false)
+      const session = new RecordingSession()
+      const detach = attachProgressFeed(app, session, 'proj-x')
+      const emit = (event: unknown): void =>
+        (app as unknown as { emitPipelineEvent(e: unknown): void }).emitPipelineEvent(event)
+      emit({ type: 'pipeline.completed', projectId: 'proj-x' })
+      await new Promise((r) => setTimeout(r, 100))
+      expect(session.events).toHaveLength(0)
+      detach()
+    } finally {
+      mod.KNOWN_SESSION_EVENT_TYPES = saved
+    }
+  })
+
+  it('regen 重写同一章：发 story-reset 清卡而非拼接旧文', async () => {
+    await expect(registerNovelSessionEvents()).resolves.toBe(true)
+    const session = new RecordingSession()
+    const detach = attachProgressFeed(app, session, 'proj-x')
+    const emit = (event: unknown): void =>
+      (app as unknown as { emitPipelineEvent(e: unknown): void }).emitPipelineEvent(event)
+
+    // 第一代：start + delta + finish
+    emit({ type: 'novel.story-start', projectId: 'proj-x', chapter: 1, title: '第1章' })
+    emit({ type: 'novel.story-delta', projectId: 'proj-x', chapter: 1, delta: '旧文第一段。' })
+    emit({ type: 'novel.story-finish', projectId: 'proj-x', chapter: 1, score: 8 })
+    await new Promise((r) => setTimeout(r, 200))
+
+    // 重写（regen 重跑 processChapter 重发同 key story-start）：不应重复开卡或拼接旧文
+    emit({ type: 'novel.story-start', projectId: 'proj-x', chapter: 1, title: '第1章' })
+    emit({ type: 'novel.story-delta', projectId: 'proj-x', chapter: 1, delta: '新稿第一段。' })
+    emit({ type: 'novel.story-finish', projectId: 'proj-x', chapter: 1, score: 9 })
+    await new Promise((r) => setTimeout(r, 200))
+
+    const starts = session.events.filter((e) => e.type === 'novel/story-start')
+    expect(starts).toHaveLength(1) // 不重复开卡（装配器拒绝第二个 start）
+
+    const resets = session.events.filter((e) => e.type === 'novel/story-reset')
+    expect(resets).toHaveLength(1)
+    expect((resets[0].data as { chapter: number }).chapter).toBe(1)
+
+    const deltas = session.events
+      .filter((e) => e.type === 'novel/story-delta')
+      .map((e) => (e.data as { delta: string }).delta)
+    // 客户端遇 reset 会清空旧卡再累积新稿；feed 侧保证两代正文帧都转发，是否拼接由 update() 决定
+    expect(deltas).toEqual(['旧文第一段。', '新稿第一段。'])
+
+    const finishes = session.events.filter((e) => e.type === 'novel/story-finish')
+    expect(finishes).toHaveLength(2)
+    detach()
+  })
+
+  it('不同章不受同 key 重写守卫影响，reset 只命中同一 (projectId, chapter)', async () => {
+    await expect(registerNovelSessionEvents()).resolves.toBe(true)
+    const session = new RecordingSession()
+    const detach = attachProgressFeed(app, session, 'proj-x')
+    const emit = (event: unknown): void =>
+      (app as unknown as { emitPipelineEvent(e: unknown): void }).emitPipelineEvent(event)
+
+    emit({ type: 'novel.story-start', projectId: 'proj-x', chapter: 1, title: '第1章' })
+    emit({ type: 'novel.story-start', projectId: 'proj-x', chapter: 2, title: '第2章' })
+    // 第 1 章重写
+    emit({ type: 'novel.story-start', projectId: 'proj-x', chapter: 1, title: '第1章' })
+    emit({ type: 'novel.story-delta', projectId: 'proj-x', chapter: 1, delta: '第1章新稿。' })
+    emit({ type: 'novel.story-delta', projectId: 'proj-x', chapter: 2, delta: '第2章正文。' })
+    await new Promise((r) => setTimeout(r, 200))
+
+    const starts = session.events.filter((e) => e.type === 'novel/story-start')
+    expect(starts).toHaveLength(2) // 两章各开一张卡
+    const resets = session.events.filter((e) => e.type === 'novel/story-reset')
+    expect(resets).toHaveLength(1) // 仅第 1 章重写命中 reset，第 2 章不受影响
+    expect((resets[0].data as { chapter: number }).chapter).toBe(1)
+    const ch2Delta = session.events
+      .filter((e) => e.type === 'novel/story-delta' && (e.data as { chapter?: number }).chapter === 2)
+      .map((e) => (e.data as { delta: string }).delta)
+    expect(ch2Delta).toEqual(['第2章正文。'])
+    detach()
   })
 })

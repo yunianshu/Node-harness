@@ -91,7 +91,11 @@ export const novelStoryDefinition: ConversationNodeDefinition<NovelStoryState> =
     if (event.type === 'novel/story-start') {
       return { id: `${event.data.projectId}-${event.data.chapter}`, role: 'start' }
     }
-    if (event.type === 'novel/story-delta' || event.type === 'novel/story-finish') {
+    if (
+      event.type === 'novel/story-delta' ||
+      event.type === 'novel/story-finish' ||
+      event.type === 'novel/story-reset'
+    ) {
       // resume 等场景 finish 可能在本次会话无 start：update 对未开卡 id 由引擎丢弃，无害
       return { id: `${event.data.projectId}-${event.data.chapter}`, role: 'update' }
     }
@@ -106,6 +110,10 @@ export const novelStoryDefinition: ConversationNodeDefinition<NovelStoryState> =
   },
   update: (context, match) => {
     const e = match.event
+    if (e.type === 'novel/story-reset') {
+      // regen/重试重写同一章：清空既有正文与收束标记，后续 delta 以新稿重新累积
+      return { ...context.state, text: '', done: false, score: undefined, isolated: false }
+    }
     if (e.type === 'novel/story-delta') {
       return { ...context.state, text: context.state.text + e.data.delta }
     }

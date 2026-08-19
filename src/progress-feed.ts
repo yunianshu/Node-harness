@@ -33,6 +33,7 @@ export interface SessionAppender {
   append(type: 'novel/progress-start', data: { projectId: string; name: string }): unknown
   append(type: 'novel/progress', data: NovelProgressEventData): unknown
   append(type: 'novel/story-start', data: { projectId: string; chapter: number; title?: string }): unknown
+  append(type: 'novel/story-reset', data: { projectId: string; chapter: number }): unknown
   append(type: 'novel/story-delta', data: { projectId: string; chapter: number; delta: string }): unknown
   append(type: 'novel/story-finish', data: { projectId: string; chapter: number; score?: number; isolated?: boolean }): unknown
 }
@@ -140,71 +141,116 @@ async function snapshotOf(
  * such a consumer exists）。这里在启动期向该 Set 补注册本插件各事件类型；
  * 失败则整体降级为不追加，绝不污染会话日志。
  */
-/** 宿主解析失败告警只发一次（apply 的 fire-and-forget 与 dispatchCommand 的 await 均会触发）。 */
+/** 宿主解析失败/命中的可观测日志各只发一次（apply 的 fire-and-forget 与 dispatchCommand 的 await 均会触发）。 */
 let hostResolutionWarned = false
+let hostResolvedLogged = false
+
+/** 宿主 dsh-session 模块的最小导出面（持久层回放读取的 KNOWN_SESSION_EVENT_TYPES 集合）。 */
+export interface HostSessionLike {
+  KNOWN_SESSION_EVENT_TYPES?: ReadonlySet<string> & { add?(value: string): unknown }
+}
+
+/** 本插件注册的会话事件类型全集（持久层回放 assertEventsSupported 需全部识别）。 */
+export const NOVEL_SESSION_EVENT_TYPES = [
+  'novel/progress-start',
+  'novel/progress',
+  'novel/story-start',
+  'novel/story-reset',
+  'novel/story-delta',
+  'novel/story-finish',
+] as const
+
+/** 宿主解析的可注入面：单测传入桩 resolve/load，避免依赖真实文件布局。 */
+export interface HostSessionResolutionImpl {
+  resolve(specifier: string): string
+  load(resolvedPath: string): Promise<unknown>
+}
+
+export type HostSessionResolution =
+  | { ok: true; module: HostSessionLike; resolvedPath: string }
+  | { ok: false; reason: string }
 
 /**
- * 定位宿主进程实际使用的 dsh-session 实例：与持久层回放（coordinator）共享同一
+ * 从 dsh 入口解析宿主 dsh-session 实例：与持久层回放（coordinator）共享同一
  * KNOWN_SESSION_EVENT_TYPES 集合。插件代码位于仓库目录，Node 按物理路径解析会把
  * 动态 import('@deepseek-ai/dsh-session') 指向本地 node_modules 副本（rc.7），而底座
  * 回放检查的是其全局嵌套实例（rc.6）——两个独立 Set，本地 add 对回放永不生效
  * （表现为 novel/* 事件写入成功但历史回放报 unknown）。故经 dsh 入口（process.argv[1]）
  * 的 createRequire 解析到底座嵌套实例再 add。
- * 非宿主环境（vitest）回退本地包（测试走 mock）；真实宿主解析失败**不回退本地**——
- * 否则本地 rc.7 同样导出该 Set，add 成功却对回放无效，原缺陷静默重建且零日志。
- * 返回 null 表示「未确认命中宿主实例」，由调用方降级为不追加（宁可丢实时呈现，不污染会话日志）。
+ * 解析失败 / 模块缺 KNOWN_SESSION_EVENT_TYPES 导出均返回 { ok:false }（**绝不回退本地**：
+ * 否则本地 rc.7 同样导出该 Set，add 成功却对回放无效，原缺陷静默重建且零日志）。
  */
-async function loadHostSessionModule(): Promise<unknown> {
-  if (!process.env.VITEST) {
-    const entry = process.argv[1]
-    if (typeof entry === 'string' && entry.length > 0) {
-      try {
-        const { createRequire } = await import('node:module')
-        const { pathToFileURL } = await import('node:url')
-        const hostRequire = createRequire(entry)
-        const resolved = hostRequire.resolve('@deepseek-ai/dsh-session')
-        const mod = await import(pathToFileURL(resolved).href)
-        if ((mod as { KNOWN_SESSION_EVENT_TYPES?: unknown }).KNOWN_SESSION_EVENT_TYPES !== undefined) return mod
-        if (!hostResolutionWarned) {
-          hostResolutionWarned = true
-          console.warn('[novel-harness] 宿主 dsh-session 实例缺失 KNOWN_SESSION_EVENT_TYPES 导出；novel/* 会话事件将不追加（会话日志安全）')
-        }
-        return null
-      } catch (err) {
-        if (!hostResolutionWarned) {
-          hostResolutionWarned = true
-          console.warn(`[novel-harness] 解析宿主 dsh-session 实例失败（${err instanceof Error ? err.message : String(err)}）；novel/* 会话事件将不追加（会话日志安全）`)
-        }
-        return null
-      }
+export async function resolveHostSessionModule(
+  entry: string,
+  impl?: Partial<HostSessionResolutionImpl>,
+): Promise<HostSessionResolution> {
+  try {
+    const { createRequire } = await import('node:module')
+    const { pathToFileURL } = await import('node:url')
+    const resolve = impl?.resolve ?? ((specifier: string) => createRequire(entry).resolve(specifier))
+    const resolvedPath = resolve('@deepseek-ai/dsh-session')
+    const load = impl?.load ?? ((p: string) => import(pathToFileURL(p).href))
+    const module = (await load(resolvedPath)) as HostSessionLike
+    if (module.KNOWN_SESSION_EVENT_TYPES === undefined) {
+      return { ok: false, reason: `解析出的模块缺失 KNOWN_SESSION_EVENT_TYPES 导出（${resolvedPath}）` }
     }
+    return { ok: true, module, resolvedPath }
+  } catch (err) {
+    return { ok: false, reason: err instanceof Error ? err.message : String(err) }
   }
-  return import('@deepseek-ai/dsh-session')
+}
+
+/**
+ * 向指定 dsh-session 模块的 KNOWN_SESSION_EVENT_TYPES 补注册本插件事件类型。
+ * 抽成纯函数便于单测断言 Set 实际包含的类型；session 为 null（未确认宿主）时返回 false。
+ */
+export function registerNovelSessionEventsInto(session: HostSessionLike | null): boolean {
+  if (session === null) return false
+  const known = session.KNOWN_SESSION_EVENT_TYPES
+  if (known === undefined || typeof known.add !== 'function') return false
+  for (const type of NOVEL_SESSION_EVENT_TYPES) known.add(type)
+  return true
 }
 
 let sessionEventTypesReady = false
 
+/** 测试钩子：重置事件类型注册闩，使「注册失败降级」路径在同一测试进程内可重测。 */
+export function resetSessionEventTypesRegistration(): void {
+  sessionEventTypesReady = false
+}
+
+async function loadHostSessionModule(): Promise<HostSessionLike | null> {
+  if (!process.env.VITEST) {
+    const entry = process.argv[1]
+    if (typeof entry !== 'string' || entry.length === 0) {
+      if (!hostResolutionWarned) {
+        hostResolutionWarned = true
+        console.warn('[novel-harness] 无 dsh 进程入口（argv[1] 缺失），无法解析宿主 dsh-session 实例；novel/* 会话事件将不追加（会话日志安全）')
+      }
+      return null
+    }
+    const resolved = await resolveHostSessionModule(entry)
+    if (resolved.ok) {
+      if (!hostResolvedLogged) {
+        hostResolvedLogged = true
+        console.log(`[novel-harness] 已解析宿主 dsh-session 实例：${resolved.resolvedPath}`)
+      }
+      return resolved.module
+    }
+    if (!hostResolutionWarned) {
+      hostResolutionWarned = true
+      console.warn(`[novel-harness] 解析宿主 dsh-session 实例失败（${resolved.reason}）；novel/* 会话事件将不追加（会话日志安全）`)
+    }
+    return null
+  }
+  return import('@deepseek-ai/dsh-session')
+}
+
 export async function registerNovelSessionEvents(): Promise<boolean> {
   if (sessionEventTypesReady) return true
-  try {
-    const session = (await loadHostSessionModule()) as
-      | {
-          KNOWN_SESSION_EVENT_TYPES?: ReadonlySet<string> & { add?(value: string): unknown }
-        }
-      | null
-    if (session === null) return false
-    const known = session.KNOWN_SESSION_EVENT_TYPES
-    if (known === undefined || typeof known.add !== 'function') return false
-    known.add('novel/progress-start')
-    known.add('novel/progress')
-    known.add('novel/story-start')
-    known.add('novel/story-delta')
-    known.add('novel/story-finish')
-    sessionEventTypesReady = true
-    return true
-  } catch {
-    return false
-  }
+  const ok = registerNovelSessionEventsInto(await loadHostSessionModule())
+  if (ok) sessionEventTypesReady = true
+  return ok
 }
 
 /**
@@ -239,7 +285,11 @@ export function attachProgressFeed(
       .loadProject(projectId)
       .then((project) => {
         // 同一 (会话, 项目) 只开一次卡：重复 attach（如 status 查询）仅刷新快照，
-        // 否则同一 Context 收到多个 start 会被对话装配器拒绝
+        // 否则同一 Context 收到多个 start 会被对话装配器拒绝。
+        // 正确性依赖 core-session 的同步 append 语义：读 events 快照 + append 位于同一
+        // 同步块（之间无 await），append 同步写日志并重置快照，并发 attach 的第二个绑定
+        // 必然看到首个 append 的 start；若未来 dsh 使 append 异步化或 events 返回独立副本，
+        // 重复 start 会回归并炸掉会话装配（story-start 侧另有按 key 的持久守卫兜底）。
         const alreadyStarted = (session.events ?? []).some(
           (e) =>
             e.type === 'novel/progress-start' &&
@@ -262,7 +312,7 @@ export function attachProgressFeed(
   // start 立即开卡，finish 先冲掉剩余 delta 再收束。整段 try 包裹：会话已关闭等不阻断流水线。
   const storyDeltaBuffer = new Map<number, string>()
   let storyTimer: ReturnType<typeof setTimeout> | null = null
-  const pushStory = (type: 'novel/story-start' | 'novel/story-delta' | 'novel/story-finish', data: Record<string, unknown>): void => {
+  const pushStory = (type: 'novel/story-start' | 'novel/story-reset' | 'novel/story-delta' | 'novel/story-finish', data: Record<string, unknown>): void => {
     try {
       session.append(type as never, data as never)
     } catch {
@@ -286,14 +336,19 @@ export function attachProgressFeed(
       // 与 progress-start 同构的幂等守卫：同一 (会话, 项目, 章) 至多一条 story-start。
       // 重复 start 会被对话装配器按 "received more than one start Match" 拒绝整条会话
       // （pause 中途写作后 resume 重发、同会话多个 FEED 命令各自转发同一条领域事件均会命中）。
-      // 已开卡时本次 start 跳过，后续 delta/finish 仍以 update 追加到既有卡（客户端按 id 键控累积）。
       const alreadyStarted = (session.events ?? []).some(
         (e) =>
           e.type === 'novel/story-start' &&
           (e.data as { projectId?: string; chapter?: number } | undefined)?.projectId === projectId &&
           (e.data as { projectId?: string; chapter?: number } | undefined)?.chapter === event.chapter,
       )
-      if (alreadyStarted) return
+      if (alreadyStarted) {
+        // 同 key 已开卡 = 重写（regen/重试再跑 processChapter 会重发 story-start）：
+        // 不重复开卡（装配器拒绝第二个 start），改发 story-reset 让客户端清空旧卡正文，
+        // 后续 delta 以新稿重新累积——否则旧文+新文在客户端拼接。
+        pushStory('novel/story-reset', { projectId, chapter: event.chapter })
+        return
+      }
       pushStory('novel/story-start', {
         projectId,
         chapter: event.chapter,
@@ -359,6 +414,8 @@ declare module '@deepseek-ai/dsh-session/types' {
     'novel/progress': NovelProgressEventData
     /** 正文流式卡起始帧：第 N 章正文开始逐字流出（log-only，不进模型历史）。 */
     'novel/story-start': { projectId: string; chapter: number; title?: string }
+    /** 正文重写清卡帧：regen/重试重写同一章时清空既有卡正文，后续 delta 以新稿重新累积。 */
+    'novel/story-reset': { projectId: string; chapter: number }
     /** 正文流式增量帧（80ms 聚合窗口）：客户端累积到对应章的卡片正文。 */
     'novel/story-delta': { projectId: string; chapter: number; delta: string }
     /** 正文流式收束帧：终稿评分（如通过审查）与隔离标记（如超限）。 */
