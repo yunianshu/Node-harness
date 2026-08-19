@@ -169,6 +169,7 @@ export class NovelHarnessApp {
       { name: 'novel.guidance.regen', description: '指导重生成', args: [{ key: 'project', required: true, description: '项目ID' }, { key: 'chapters', required: true, description: '章号列表' }, { key: 'stage', required: true, description: 'outline|content' }, { key: 'confirmFinal', required: false, description: '确认终稿重生成' }] },
       { name: 'novel.admin.provider', description: '注册服务商/凭据', args: [{ key: 'providerId', required: true, description: '服务商ID' }, { key: 'kind', required: true, description: 'openai-compat|glm-plan-cn|glm-plan-intl' }, { key: 'baseURL', required: true, description: '端点' }, { key: 'apiKey', required: false, description: 'API Key' }, { key: 'planToken', required: false, description: '订阅 token' }, { key: 'channel', required: false, description: 'cn|intl' }] },
       { name: 'novel.regenerate', description: '失败章重入队', args: [{ key: 'project', required: true, description: '项目ID' }, { key: 'chapters', required: true, description: '章号列表' }] },
+      { name: 'novel.probe', description: '探测 dsh 底座模型能力', args: [{ key: 'call', required: false, description: 'provider/model 流式调用' }, { key: 'text', required: false, description: '调用文本' }, { key: 'maxTokens', required: false, description: '输出上限' }] },
     ]
   }
 
@@ -209,6 +210,8 @@ export class NovelHarnessApp {
         return this.registerProvider(args)
       case 'novel.regenerate':
         return this.projects.regenerate(String(args.project), (args.chapters as number[]).map(Number))
+      case 'novel.probe':
+        return this.probeDshLlm(args)
       default:
         throw new Error(`未知命令：${name}`)
     }
@@ -231,6 +234,37 @@ export class NovelHarnessApp {
       this.registry.attachCredential(providerId, handle)
     }
     return { providerId }
+  }
+
+  /**
+   * 探测 dsh 底座模型能力（开发诊断命令）：
+   * - 无参：列出全部可用模型（provider route / model id）
+   * - --call provider/model：对指定模型做一次真实流式调用，返回聚合文本
+   */
+  async probeDshLlm(args: Record<string, unknown>): Promise<unknown> {
+    const models = await this.host.llm.listModels()
+    const call = args.call !== undefined ? String(args.call) : undefined
+    if (!call) {
+      return {
+        kind: 'models',
+        count: models.length,
+        models: models.map((m) => `${m.provider}/${m.model}${m.name ? `（${m.name}）` : ''}`),
+      }
+    }
+    const [provider, model] = call.split('/')
+    if (!provider || !model) throw new Error(`--call 格式应为 provider/model，收到 ${call}`)
+    const text = String(args.text ?? '用一句话自我介绍。')
+    const chunks: string[] = []
+    for await (const delta of this.host.llm.stream({
+      provider,
+      model,
+      user: text,
+      ...(args.maxTokens !== undefined ? { maxTokens: Number(args.maxTokens) } : {}),
+    })) {
+      if (delta.text) chunks.push(delta.text)
+      else if (delta.reasoning) chunks.push(`[思考] ${delta.reasoning}`)
+    }
+    return { provider, model, content: chunks.join('') }
   }
 
   async startProject(projectId: string): Promise<unknown> {

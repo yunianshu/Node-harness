@@ -2,7 +2,7 @@ import type { HostProvider } from '../host/types.js'
 import type { ModelBinding, PipelineRole } from '../project/schema.js'
 import { FallbackNeededError, ChannelManager, ChannelStatusSnapshot } from './fallback.js'
 import { FallbackHop, ModelExhaustedError } from './errors.js'
-import { ProviderRegistry } from './registry.js'
+import { ProviderRegistry, DSL_PROVIDER } from './registry.js'
 import { GlobalRateLimiter } from './rate-limiter.js'
 import { ChatMessage, ChatParams, ChatResponse, chatCompletion, rawResponseFileName } from './providers/openai-compat.js'
 import { join } from 'node:path'
@@ -16,6 +16,16 @@ export interface LlmRequest {
 export interface InvokeContext {
   projectId: string
   chapter?: number
+}
+
+/** 解析 dsh 绑定 model 为 (provider route, model id) 二元组；格式不符返回 null。 */
+export function parseDshModel(model: string): { provider: string; model: string } | null {
+  const slash = model.indexOf('/')
+  if (slash <= 0 || slash === model.length - 1) return null
+  const provider = model.slice(0, slash)
+  const rest = model.slice(slash + 1)
+  if (provider.length === 0 || rest.length === 0) return null
+  return { provider, model: rest }
 }
 
 export interface ModelGatewayOptions {
@@ -44,9 +54,34 @@ export class ModelGateway {
     this.bindings = new Map(bindings.map((b) => [b.role, b]))
   }
 
+  /**
+   * 流式调用入口：dsh 模型逐段回调 delta，外部模型一次性回调全文。
+   * writer 阶段用它实现正文实时呈现（Task #8）。返回聚合后的完整响应。
+   */
+  async invokeStream(
+    role: PipelineRole,
+    request: LlmRequest,
+    ctx: InvokeContext,
+    onDelta?: (text: string) => void,
+  ): Promise<ChatResponse> {
+    const binding = this.bindings.get(role)
+    if (!binding) throw new NoBindingError(role)
+    if (binding.primary.providerId === DSL_PROVIDER) {
+      return await this.invokeDsh(binding, request, ctx, onDelta)
+    }
+    const response = await this.invoke(role, request, ctx)
+    onDelta?.(response.content)
+    return response
+  }
+
   async invoke(role: PipelineRole, request: LlmRequest, ctx: InvokeContext): Promise<ChatResponse> {
     const binding = this.bindings.get(role)
     if (!binding) throw new NoBindingError(role)
+
+    // dsh 底座模型走 host.llm 流式面（凭据由底座管理，harness 零接触密钥）
+    if (binding.primary.providerId === DSL_PROVIDER) {
+      return await this.invokeDsh(binding, request, ctx)
+    }
 
     const messages: ChatMessage[] = []
     if (request.system) messages.push({ role: 'system', content: request.system })
@@ -149,6 +184,85 @@ export class ModelGateway {
     }
 
     throw new ModelExhaustedError(`角色 ${role} 全部模型不可用：${trailOf(trail)}`, trail)
+  }
+
+  /** dsh 底座模型链式调用：primary → fallbacks，均经 host.llm 流式面。 */
+  private async invokeDsh(
+    binding: ModelBinding,
+    request: LlmRequest,
+    _ctx: InvokeContext,
+    onDelta?: (text: string) => void,
+  ): Promise<ChatResponse> {
+    const chain = [binding.primary, ...binding.fallbacks]
+    const trail: FallbackHop[] = []
+    for (const endpoint of chain) {
+      if (endpoint.providerId !== DSL_PROVIDER) {
+        trail.push({
+          providerId: endpoint.providerId,
+          model: endpoint.model,
+          accessMode: endpoint.accessMode,
+          attempts: 0,
+          lastError: 'dsh 绑定含非 dsh 降级端点（混合降级暂不支持）',
+        })
+        continue
+      }
+      const parsed = parseDshModel(endpoint.model)
+      if (!parsed) {
+        trail.push({
+          providerId: endpoint.providerId,
+          model: endpoint.model,
+          accessMode: endpoint.accessMode,
+          attempts: 0,
+          lastError: 'model 格式应为「provider route / model id」',
+        })
+        continue
+      }
+      let attempts = 0
+      try {
+        attempts++
+        return await this.collectDsh(parsed, binding, request, onDelta)
+      } catch (err) {
+        trail.push({
+          providerId: endpoint.providerId,
+          model: endpoint.model,
+          accessMode: endpoint.accessMode,
+          attempts,
+          lastError: err instanceof Error ? err.message : String(err),
+        })
+      }
+    }
+    throw new ModelExhaustedError(`角色 ${binding.role} 全部 dsh 模型不可用：${trailOf(trail)}`, trail)
+  }
+
+  /** 消费 host.llm 流式增量，聚合为完整响应并透传 delta 回调。 */
+  private async collectDsh(
+    parsed: { provider: string; model: string },
+    binding: ModelBinding,
+    request: LlmRequest,
+    onDelta?: (text: string) => void,
+  ): Promise<ChatResponse> {
+    let content = ''
+    let finish: 'stop' | 'length' | 'error' | 'aborted' = 'stop'
+    let errorMsg = ''
+    for await (const delta of this.options.host.llm.stream({
+      provider: parsed.provider,
+      model: parsed.model,
+      ...(request.system !== undefined ? { system: request.system } : {}),
+      user: request.user,
+      temperature: request.params?.temperature ?? binding.temperature,
+      maxTokens: request.params?.maxOutputTokens ?? binding.maxOutputTokens,
+    })) {
+      if (delta.text) {
+        content += delta.text
+        onDelta?.(delta.text)
+      }
+      if (delta.finish) finish = delta.finish
+      if (delta.error) errorMsg = delta.error
+    }
+    if (finish === 'error' || finish === 'aborted') {
+      throw new Error(errorMsg || `dsh 模型调用${finish === 'aborted' ? '中止' : '失败'}`)
+    }
+    return { content, finishReason: finish === 'length' ? 'length' : 'stop', usage: null, raw: null }
   }
 
   channelStatus(): ChannelStatusSnapshot[] {

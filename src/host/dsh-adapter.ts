@@ -4,11 +4,15 @@ import { dirname, join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { credentialRef, type CredentialRef } from '@deepseek-ai/dsh-credentials'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { atomicWriteJson, readJsonValidated } from '../storage/atomic.js'
 import {
   CredentialHandle,
   CredentialMeta,
   HostEvent,
+  HostLlmDelta,
+  HostLlmModel,
+  HostLlmRequest,
   HostProvider,
   maskSecret,
 } from './types.js'
@@ -147,6 +151,58 @@ export class DshHostAdapter implements HostProvider {
       dataRoot: async () => this.rootDir,
     }
   }
+
+  /**
+   * dsh 底座模型执行面（design 2.1.2 第 6 条：底座具体 API 只进本文件）。
+   * 凭据由底座 settings.yaml 的 apiKeyEnv 管理，本面不接触、不缓存任何密钥。
+   */
+  get llm() {
+    const ctx = this.ctx
+    return {
+      listModels: async (): Promise<HostLlmModel[]> => {
+        const out: HostLlmModel[] = []
+        for (const provider of ctx.llm.listProviders()) {
+          const models = await ctx.llm.listModels(provider.id)
+          for (const m of models) {
+            out.push({ provider: provider.id, model: m.id, ...(m.name && m.name !== m.id ? { name: m.name } : {}) })
+          }
+        }
+        return out
+      },
+      stream: async function* (req: HostLlmRequest): AsyncIterable<HostLlmDelta> {
+        const messages = [
+          createUserMessage({
+            content: [{ type: 'text', text: req.user }],
+            source: { kind: 'user' },
+          }),
+        ]
+        for await (const chunk of ctx.llm.stream({
+          provider: req.provider,
+          model: req.model,
+          ...(req.system !== undefined ? { system: req.system } : {}),
+          messages,
+          ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
+          ...(req.maxTokens !== undefined ? { maxTokens: req.maxTokens } : {}),
+          ...(req.signal !== undefined ? { signal: req.signal } : {}),
+        })) {
+          if (chunk.type === 'text-delta') {
+            yield { text: chunk.text }
+          } else if (chunk.type === 'reasoning-delta') {
+            yield { reasoning: chunk.text }
+          } else if (chunk.type === 'finish') {
+            // finish 透传给调用方（gateway dsh 分支）自行决定成功/失败，不在本面抛错。
+            if (chunk.reason.kind === 'stop' || chunk.reason.kind === 'tool-calls') {
+              yield { finish: 'stop' }
+            } else if (chunk.reason.kind === 'max-tokens') {
+              yield { finish: 'length' }
+            } else {
+              yield { finish: chunk.reason.kind === 'aborted' ? 'aborted' : 'error', error: JSON.stringify(chunk.reason) }
+            }
+          }
+        }
+      },
+    }
+  }
 }
 
 export class FakeHost implements HostProvider {
@@ -155,9 +211,11 @@ export class FakeHost implements HostProvider {
   private readonly published: unknown[] = []
   private nextId = 1
   private rootDir: string
+  private readonly llmImpl?: HostProvider['llm']
 
-  constructor(dataRoot?: string) {
+  constructor(dataRoot?: string, llm?: HostProvider['llm']) {
     this.rootDir = dataRoot ?? ''
+    this.llmImpl = llm
   }
 
   async dataRoot(): Promise<string> {
@@ -212,6 +270,17 @@ export class FakeHost implements HostProvider {
 
   get storage() {
     return { dataRoot: () => this.dataRoot() }
+  }
+
+  get llm() {
+    // 测试可注入模拟（如流式正文路径验证）；未注入则抛"未实现"。
+    if (this.llmImpl) return this.llmImpl
+    return {
+      listModels: async (): Promise<HostLlmModel[]> => [],
+      stream: async function* (): AsyncIterable<HostLlmDelta> {
+        throw new Error('FakeHost 未注入 dsh LLM 模拟——测试请传 llm 参数')
+      },
+    }
   }
 
   publishedEvents(): readonly unknown[] {

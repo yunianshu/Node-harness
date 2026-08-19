@@ -6,6 +6,12 @@ export const GLM_PAY_BASE_URL = 'https://open.bigmodel.cn/api/paas/v4'
 export const GLM_PLAN_CN_BASE_URL = 'https://open.bigmodel.cn/api/coding/paas/v4'
 export const GLM_PLAN_INTL_BASE_URL = 'https://api.z.ai/api/coding/paas/v4'
 
+/**
+ * dsh 底座模型保留字 providerId：绑定 model 格式为「provider route / model id」
+ * （如 `zai-coding-cn/glm-5.2`），经 HostProvider.llm 流式面调用，凭据由底座管理。
+ */
+export const DSL_PROVIDER = 'dsh'
+
 export type ProviderKind = 'openai-compat' | 'glm-plan-cn' | 'glm-plan-intl'
 
 export interface ProviderDef {
@@ -101,6 +107,8 @@ export class ProviderRegistry {
     for (const binding of bindings) {
       const refs = [binding.primary, ...binding.fallbacks]
       for (const ref of refs) {
+        // dsh 底座模型：不经 registry 注册，凭据与通道由底座管理，跳过三元校验
+        if (ref.providerId === DSL_PROVIDER) continue
         const provider = this.providers.get(ref.providerId)
         if (!provider) {
           errors.push(`角色 ${binding.role}：服务商未注册 ${ref.providerId}`)

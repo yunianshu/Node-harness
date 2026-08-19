@@ -9,11 +9,13 @@ import { ensureProjectLayout, novelsRoot, projectPaths } from '../storage/layout
 import {
   DEFAULT_STYLE_PACK,
   PREMISE_WARN_MIN_LENGTH,
+  ModelBinding,
   ProjectConfig,
   ProjectConfigSchema,
   ProjectCreateInput,
   ProjectCreateInputSchema,
 } from './schema.js'
+import { DSL_PROVIDER } from '../model/registry.js'
 import { InvalidStateError, transition } from './state-machine.js'
 
 export type ProjectErrorCode =
@@ -71,6 +73,27 @@ function isPidAlive(pid: number): boolean {
   }
 }
 
+/**
+ * 未显式绑定模型时的默认 dsh 底座模型绑定（模型 = dsh settings.yaml 注册的 provider route）。
+ * 角色 → 主模型/降级链；writer 放大输出预算规避推理模型思考段截断。
+ */
+export function defaultDshBindings(): ModelBinding[] {
+  // dsh 绑定不经 registry 三元校验（accessMode 仅 schema 占位，语义由 DSL_PROVIDER 覆盖）
+  const ref = (model: string): ModelBinding['primary'] => ({
+    providerId: DSL_PROVIDER,
+    model,
+    accessMode: 'pay-as-you-go',
+  })
+  return [
+    { role: 'planner', primary: ref('zai-coding-cn/glm-5.2'), fallbacks: [ref('hprt/glm-5.1')], temperature: 0.6, maxOutputTokens: 8192, fallbackThreshold: 5 },
+    { role: 'outliner', primary: ref('zai-coding-cn/glm-5.2'), fallbacks: [ref('hprt/glm-5.1')], temperature: 0.7, maxOutputTokens: 8192, fallbackThreshold: 5 },
+    { role: 'outline-reviewer', primary: ref('zai-coding-cn/glm-5.1'), fallbacks: [ref('hprt/deepseek-v4-flash')], temperature: 0.3, maxOutputTokens: 8192, fallbackThreshold: 5 },
+    { role: 'writer', primary: ref('zai-coding-cn/glm-5.2'), fallbacks: [ref('hprt/glm-5.1')], temperature: 0.9, maxOutputTokens: 16384, fallbackThreshold: 5 },
+    { role: 'reviewer', primary: ref('zai-coding-cn/glm-5.1'), fallbacks: [ref('hprt/deepseek-v4-flash')], temperature: 0.3, maxOutputTokens: 8192, fallbackThreshold: 5 },
+    { role: 'archivist', primary: ref('zai-coding-cn/glm-4.7'), fallbacks: [], temperature: 0.3, maxOutputTokens: 4096, fallbackThreshold: 5 },
+  ]
+}
+
 export class ProjectService {
   constructor(private readonly deps: ProjectServiceDeps) {}
 
@@ -120,6 +143,11 @@ export class ProjectService {
 
     const now = new Date().toISOString()
     const projectId = `${clean.name}-${randomUUID().slice(0, 8)}`
+    // 未显式绑定模型时自动绑定 dsh 底座模型（聊天式创建开箱即用，无需注册外部服务商）
+    const bindings = clean.bindings ?? defaultDshBindings()
+    if (!clean.bindings) {
+      warnings.push('未显式绑定模型，已自动绑定 dsh 底座模型（可在命令中调整角色模型/温度）')
+    }
     const config: ProjectConfig = ProjectConfigSchema.parse({
       projectId,
       name: clean.name,
@@ -132,7 +160,7 @@ export class ProjectService {
       aiFlavor: clean.aiFlavor ?? {},
       scheduling: clean.scheduling ?? {},
       retry: clean.retry ?? {},
-      bindings: clean.bindings ?? [],
+      bindings,
       status: 'pending',
       webhookUrl: clean.webhookUrl ?? '',
       createdAt: now,
