@@ -39,6 +39,7 @@ DEEPSEEK_API_KEY=... MINIMAX_API_KEY=... GLM_PLAN_TOKEN=... npx tsx scripts/e2e-
 - **数据根**：默认 `$DSH_HOME/novels`（`dshHomePath('novels')`），可由插件配置覆盖。
 - **依赖**：`@deepseek-ai/cordis`（不是公共 npm 的 cordis）+ dsh-commands/dsh-credentials/dsh-home-paths，均声明为 peerDependencies。
 - **无 UI 面板扩展点**：dsh web 为固定编译产物，不存在动态面板注册；进度呈现经 `novel-status` 命令与 webhook（spec 5.7）。
+- **默认模型绑定与思考输出**：未显式绑定模型时 `defaultDshBindings()`（`src/project/service.ts`）以 zai-coding-cn 的 glm 推理模型作主模型、deepseek-official 作降级链。glm 稳定输出 reasoning（供折叠思考块展示）**依赖** `~/.dsh/settings.yaml` 的 `llm-pi-ai.providers.zai-coding-cn` 下配置 `reasoning: high`；缺失时 pi-ai 会发 `thinking:{type:"disabled"}`，glm 思考被强制关闭、退回不稳定内联 `[思考]`。新环境部署须同步此配置。
 
 ## 架构
 
