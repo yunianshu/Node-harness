@@ -78,19 +78,22 @@ function isPidAlive(pid: number): boolean {
  * 角色 → 主模型/降级链；writer 放大输出预算规避推理模型思考段截断。
  */
 export function defaultDshBindings(): ModelBinding[] {
-  // dsh 绑定不经 registry 三元校验（accessMode 仅 schema 占位，语义由 DSL_PROVIDER 覆盖）
+  // dsh 绑定不经 registry 三元校验（accessMode 仅 schema 占位，语义由 DSL_PROVIDER 覆盖）。
+  // 主模型统一用 deepseek-official 的推理模型（thinking 默认开启、reasoningEffort=high），
+  // 稳定输出 reasoning-delta 供折叠思考块展示；降级链退回同路由的 flash 快模型。
+  // 推理模型思考段与正文共享输出预算，故各角色 maxOutputTokens 较通用模型放大一档。
   const ref = (model: string): ModelBinding['primary'] => ({
     providerId: DSL_PROVIDER,
     model,
     accessMode: 'pay-as-you-go',
   })
   return [
-    { role: 'planner', primary: ref('zai-coding-cn/glm-5.2'), fallbacks: [ref('hprt/glm-5.1')], temperature: 0.6, maxOutputTokens: 8192, fallbackThreshold: 5 },
-    { role: 'outliner', primary: ref('zai-coding-cn/glm-5.2'), fallbacks: [ref('hprt/glm-5.1')], temperature: 0.7, maxOutputTokens: 8192, fallbackThreshold: 5 },
-    { role: 'outline-reviewer', primary: ref('zai-coding-cn/glm-5.1'), fallbacks: [ref('hprt/deepseek-v4-flash')], temperature: 0.3, maxOutputTokens: 8192, fallbackThreshold: 5 },
-    { role: 'writer', primary: ref('zai-coding-cn/glm-5.2'), fallbacks: [ref('hprt/glm-5.1')], temperature: 0.9, maxOutputTokens: 16384, fallbackThreshold: 5 },
-    { role: 'reviewer', primary: ref('zai-coding-cn/glm-5.1'), fallbacks: [ref('hprt/deepseek-v4-flash')], temperature: 0.3, maxOutputTokens: 8192, fallbackThreshold: 5 },
-    { role: 'archivist', primary: ref('zai-coding-cn/glm-4.7'), fallbacks: [], temperature: 0.3, maxOutputTokens: 4096, fallbackThreshold: 5 },
+    { role: 'planner', primary: ref('deepseek-official/deepseek-v4-pro'), fallbacks: [ref('deepseek-official/deepseek-v4-flash')], temperature: 0.6, maxOutputTokens: 16384, fallbackThreshold: 5 },
+    { role: 'outliner', primary: ref('deepseek-official/deepseek-v4-pro'), fallbacks: [ref('deepseek-official/deepseek-v4-flash')], temperature: 0.7, maxOutputTokens: 16384, fallbackThreshold: 5 },
+    { role: 'outline-reviewer', primary: ref('deepseek-official/deepseek-v4-pro'), fallbacks: [ref('deepseek-official/deepseek-v4-flash')], temperature: 0.3, maxOutputTokens: 16384, fallbackThreshold: 5 },
+    { role: 'writer', primary: ref('deepseek-official/deepseek-v4-pro'), fallbacks: [ref('deepseek-official/deepseek-v4-flash')], temperature: 0.9, maxOutputTokens: 32768, fallbackThreshold: 5 },
+    { role: 'reviewer', primary: ref('deepseek-official/deepseek-v4-pro'), fallbacks: [ref('deepseek-official/deepseek-v4-flash')], temperature: 0.3, maxOutputTokens: 16384, fallbackThreshold: 5 },
+    { role: 'archivist', primary: ref('deepseek-official/deepseek-v4-flash'), fallbacks: [], temperature: 0.3, maxOutputTokens: 8192, fallbackThreshold: 5 },
   ]
 }
 

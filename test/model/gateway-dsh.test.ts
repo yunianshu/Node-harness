@@ -245,7 +245,8 @@ describe('defaultDshBindings（未显式绑定模型的 dsh 默认值）', () =>
       expect(b.primary.model).toMatch(/.+\/.+/)
     }
     const writer = bindings.find((b) => b.role === 'writer')!
-    expect(writer.maxOutputTokens).toBe(16384)
+    // writer 放大输出预算规避推理模型思考段截断（deepseek-v4-pro reasoning 与正文共享预算）
+    expect(writer.maxOutputTokens).toBe(32768)
   })
 
   it('validateBindings 对 dsh 引用短路（不要求注册/凭据，不报误错）', () => {
