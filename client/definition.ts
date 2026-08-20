@@ -5,14 +5,11 @@ import type {
   ConversationNodeDefinition,
 } from '@deepseek-ai/dsh-client-runtime/client'
 import type { ChatNodeDataMap } from '@deepseek-ai/dsh-client-ui-conversation/client'
-import type { NovelProgressEventData } from '../src/progress-feed.js'
+import type { NovelMilestoneEventData } from '../src/progress-feed.js'
 import type { NovelToc } from '../src/notify/progress.js'
 
-/** 折叠态：项目名 + 最新一帧进度快照（latest-write-wins）。 */
-export interface NovelProgressState {
-  readonly name: string
-  readonly snapshot: NovelProgressEventData | null
-}
+/** 里程碑消息卡状态：一条独立步骤消息（start 即完整载荷，无 update 折叠）。 */
+export type NovelMilestoneState = NovelMilestoneEventData
 
 /** 目录卡折叠态：项目名 + 最新一帧目录快照（latest-write-wins）。 */
 export interface NovelTocState {
@@ -37,8 +34,8 @@ export interface NovelStoryState {
 
 declare module '@deepseek-ai/dsh-client-ui-conversation/client' {
   interface ChatNodeDataMap {
-    /** 小说生成进度卡片的载荷（最新快照）。 */
-    'novel-progress': NovelProgressEventData
+    /** 小说步骤消息的载荷（一条独立步骤）。 */
+    'novel-milestone': NovelMilestoneEventData
     /** 小说正文流式卡片的载荷（累积文本）。 */
     'novel-story': NovelStoryState
     /** 小说目录卡片的载荷（最新快照）。 */
@@ -47,44 +44,36 @@ declare module '@deepseek-ai/dsh-client-ui-conversation/client' {
 }
 
 /**
- * novel/progress 会话事件族 → 一张按 projectId 键控的对话进度卡片。
- * 起始帧（novel/progress-start）开卡，后续每帧快照整体替换（快照语义）。
+ * novel/milestone 会话事件 → 一条独立聊天消息（每条唯一 id，start 即完整载荷）。
+ * 每个流程步骤（章纲生成/章纲审查/正文写作/正文审查/终稿完成等）各落一条，逐条排列。
  */
-export const novelProgressDefinition: ConversationNodeDefinition<NovelProgressState> = {
-  kind: 'novel-progress',
+export const novelMilestoneDefinition: ConversationNodeDefinition<NovelMilestoneState> = {
+  kind: 'novel-milestone',
   target: 'chat',
   match: (event) => {
-    if (event.type === 'novel/progress-start') {
-      return { id: String(event.data.projectId), role: 'start' }
-    }
-    if (event.type === 'novel/progress') {
-      return { id: String(event.data.projectId), role: 'update' }
+    if (event.type === 'novel/milestone') {
+      return { id: event.data.id, role: 'start' }
     }
     return null
   },
   start: (_context, match) => {
-    if (match.event.type !== 'novel/progress-start') {
-      throw new Error('novel-progress start requires novel/progress-start')
+    if (match.event.type !== 'novel/milestone') {
+      throw new Error('novel-milestone start requires novel/milestone')
     }
-    return { name: match.event.data.name, snapshot: null }
+    return match.event.data
   },
-  update: (context, match) => {
-    if (match.event.type === 'novel/progress') {
-      return { ...context.state, snapshot: match.event.data }
-    }
-    return context.state
-  },
+  update: (context) => context.state,
   buildViewNode: (context): ChatConversationViewNode | null => {
-    if (context.start === undefined || context.state?.snapshot == null) return null
+    if (context.start === undefined) return null
     return {
       key: context.key,
-      kind: 'novel-progress',
+      kind: 'novel-milestone',
       id: context.id,
       target: 'chat',
       anchorSeq: context.start.event.seq,
       location: context.start.location,
       visibility: 'visible',
-      data: context.state.snapshot,
+      data: context.state,
     }
   },
 }

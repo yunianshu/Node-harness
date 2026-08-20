@@ -18,7 +18,7 @@ import {
   resetSessionEventTypesRegistration,
   resolveHostSessionModule,
 } from '../src/progress-feed'
-import type { NovelProgressEventData, SessionAppender } from '../src/progress-feed'
+import type { NovelMilestoneEventData, SessionAppender } from '../src/progress-feed'
 import type { NovelToc } from '../src/notify/progress'
 import type { ModelGateway, LlmRequest, InvokeContext } from '../src/model/gateway'
 import type { PipelineRole } from '../src/project/schema'
@@ -27,8 +27,7 @@ import { diverseParagraphText, resetCounter } from './helpers/text'
 class RecordingSession implements SessionAppender {
   readonly events: { type: string; data?: unknown }[] = []
 
-  append(type: 'novel/progress-start', data: { projectId: string; name: string }): unknown
-  append(type: 'novel/progress', data: NovelProgressEventData): unknown
+  append(type: 'novel/milestone', data: NovelMilestoneEventData): unknown
   append(type: 'novel/story-start', data: { projectId: string; chapter: number; title?: string }): unknown
   append(type: 'novel/story-reset', data: { projectId: string; chapter: number }): unknown
   append(type: 'novel/story-delta', data: { projectId: string; chapter: number; delta: string }): unknown
@@ -120,7 +119,7 @@ describe('NovelProgressFeed（会话进度供给）', () => {
     for (const t of NOVEL_SESSION_EVENT_TYPES) expect(known!.has(t)).toBe(true)
   })
 
-  it('pushes milestone snapshots to a bound session and survives re-attach without duplicate start', { timeout: 60_000 }, async () => {
+  it('pushes milestone messages to a bound session and survives re-attach without duplicate start', { timeout: 60_000 }, async () => {
     await registerNovelSessionEvents()
     const created = await app.projects.create(
       { name: '进度测试', premise: '一个关于刀客与旧案的故事，雪夜长街，故人重逢，真相渐近', totalChapters: 3, stylePackId: 'gulong' },
@@ -133,35 +132,30 @@ describe('NovelProgressFeed（会话进度供给）', () => {
     const deadline = Date.now() + 60_000
     while (Date.now() < deadline) {
       const proj = await app.projects.loadProject(created.project.projectId)
-      const snapshots = session.events.filter((e) => e.type === 'novel/progress') as { data?: NovelProgressEventData }[]
-      const lastStatus = snapshots[snapshots.length - 1]?.data?.status
-      // 项目 completed 且快照也落地 completed 才退出：snapshot 是异步 append（fire-and-forget），
-      // 只等项目状态会读到旧帧（generating）造成竞态 flaky
-      if (proj.status === 'completed' && lastStatus === 'completed') break
+      const milestones = session.events.filter((e) => e.type === 'novel/milestone') as { data?: NovelMilestoneEventData }[]
+      // 项目 completed 且「全书生成完成」里程碑已落地才退出，避免读到流水线中途的瞬时态
+      const hasCompleted = milestones.some((m) => m.data?.kind === 'completed')
+      if (proj.status === 'completed' && hasCompleted) break
       await new Promise((r) => setTimeout(r, 100))
     }
 
-    const starts = session.events.filter((e) => e.type === 'novel/progress-start')
-    expect(starts).toHaveLength(1)
-    expect((starts[0].data as { projectId: string }).projectId).toBe(created.project.projectId)
+    const milestones = session.events.filter((e) => e.type === 'novel/milestone') as { data?: NovelMilestoneEventData }[]
+    expect(milestones.length).toBeGreaterThanOrEqual(1)
+    // 每条里程碑是独立消息：id 全局唯一（projectId-seq）、text 非空、time 为 HH:MM:SS
+    const ids = new Set(milestones.map((m) => m.data!.id))
+    expect(ids.size).toBe(milestones.length)
+    expect(milestones.every((m) => typeof m.data!.text === 'string' && m.data!.text.length > 0)).toBe(true)
+    expect(milestones.every((m) => /^\d{2}:\d{2}:\d{2}$/.test(m.data!.time))).toBe(true)
+    // 终稿完成步骤带评分、全书完成里程碑存在（聊天式拆分后的两条关键消息）
+    expect(milestones.some((m) => m.data!.kind === 'done' && m.data!.text.includes('终稿完成'))).toBe(true)
+    expect(milestones.some((m) => m.data!.kind === 'completed' && m.data!.text === '全书生成完成')).toBe(true)
 
-    const snapshots = session.events.filter((e) => e.type === 'novel/progress') as { data?: NovelProgressEventData }[]
-    expect(snapshots.length).toBeGreaterThanOrEqual(1)
-    const last = snapshots[snapshots.length - 1].data!
-    expect(last.status).toBe('completed')
-    expect(last.finalDone).toBe(3)
-    expect(last.totalChapters).toBe(3)
-    // 过程视图字段：步骤时间线随过程推进累积，终态无活跃章
-    expect(last.recent !== undefined && last.recent.length > 0).toBe(true)
-    expect(last.recent!.some((r) => r.note.includes('▸'))).toBe(true)
-    expect(last.activeChapters).toEqual([])
-
-    // 重复 attach（如 status 查询重绑）：不再追加第二个 start，仅刷新快照
-    const before = session.events.length
+    // 重复 attach（如 status 查询重绑）：目录卡守卫不重复开卡，里程碑消息不重复（领域事件对象去重）
+    const beforeMilestones = milestones.length
     const detach2 = attachProgressFeed(app, session, created.project.projectId)
     await new Promise((r) => setTimeout(r, 300))
-    expect(session.events.filter((e) => e.type === 'novel/progress-start')).toHaveLength(1)
-    expect(session.events.length).toBeGreaterThan(before)
+    expect(session.events.filter((e) => e.type === 'novel/toc-start')).toHaveLength(1)
+    expect(session.events.filter((e) => e.type === 'novel/milestone')).toHaveLength(beforeMilestones)
     detach()
     detach2()
   })
@@ -298,7 +292,7 @@ describe('NovelProgressFeed（会话进度供给）', () => {
     detach2()
   })
 
-  it('pipeline.log 失败帧携带 detail：recent 文案含「（失败重试：原因）」并截断 80', async () => {
+  it('pipeline.log 失败帧携带 detail：里程碑文案含「（失败重试：原因）」并截断 80', async () => {
     await registerNovelSessionEvents()
     const created = await app.projects.create(
       { name: '补全原因', premise: '刀客雪夜长街，故人重逢，真相渐近。', totalChapters: 1, stylePackId: 'gulong' },
@@ -320,13 +314,12 @@ describe('NovelProgressFeed（会话进度供给）', () => {
     })
     await new Promise((r) => setTimeout(r, 300))
 
-    const snaps = session.events.filter((e) => e.type === 'novel/progress') as { data?: NovelProgressEventData }[]
-    const last = snaps[snaps.length - 1].data!
-    const hit = (last.recent ?? []).map((r) => r.note).find((n) => n.includes('（失败重试：'))
+    const milestones = session.events.filter((e) => e.type === 'novel/milestone') as { data?: NovelMilestoneEventData }[]
+    const hit = milestones.map((m) => m.data!.text).find((t) => t.includes('（失败重试：'))
     expect(hit).toBeDefined()
-    expect(hit!).toContain('▸ 规划（失败重试：')
+    expect(hit!).toContain('规划（失败重试：')
     // 补全原因合并进文案且截断到 80 字符（与 chapter.isolated 分支同上限；+82 补偿结尾右括号）
-    expect(hit!.length).toBeLessThanOrEqual('▸ 规划（失败重试：'.length + 82)
+    expect(hit!.length).toBeLessThanOrEqual('规划（失败重试：'.length + 82)
     detach()
   })
 })
@@ -415,7 +408,7 @@ describe('宿主 dsh-session 实例解析（根因修复的自动化覆盖）', 
       }
       expect(again.KNOWN_SESSION_EVENT_TYPES).toBe(host.module.KNOWN_SESSION_EVENT_TYPES)
       expect(registerNovelSessionEventsInto(host.module)).toBe(true)
-      expect(again.KNOWN_SESSION_EVENT_TYPES!.has('novel/progress-start')).toBe(true)
+      expect(again.KNOWN_SESSION_EVENT_TYPES!.has('novel/milestone')).toBe(true)
       expect(again.KNOWN_SESSION_EVENT_TYPES!.has('novel/story-reset')).toBe(true)
     } finally {
       await rm(dir, { recursive: true, force: true })

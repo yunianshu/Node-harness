@@ -2,39 +2,32 @@ import type { NovelHarnessApp } from './app.js'
 import { buildToc, type NovelToc } from './notify/progress.js'
 
 /**
- * 会话进度供给：把流水线里程碑以 novel/progress 会话事件（快照语义，
- * 同 todo/write 的 latest-write-wins）追加到发起命令的 agent 会话，
- * dsh web 对话内由客户端进度卡片（client/）实时渲染。
+ * 会话进度供给：把流水线里程碑以 novel/milestone 会话事件（每条独立聊天消息，
+ * 与对话流一致的逐条消息呈现）追加到发起命令的 agent 会话，dsh web 对话内由
+ * 客户端里程碑卡片（client/）逐条渲染；另推目录卡 novel/toc 作为进度兜底。
  * 事件为 log-only：不进模型历史、不产生 token。
  */
 
-/** 一帧项目进度快照（novel/progress 会话事件载荷）。 */
-export interface NovelProgressEventData {
+/** 步骤消息种类：客户端据此选择图标与配色。 */
+export type NovelMilestoneKind = 'step' | 'done' | 'completed' | 'isolated' | 'fallback' | 'error' | 'status'
+
+/** 一条小说生成步骤消息（novel/milestone 会话事件载荷，每条独立聊天消息）。 */
+export interface NovelMilestoneEventData {
   projectId: string
-  name: string
-  status: string
-  /** 最近一次流水线失败原因（失败帧携带，客户端渲染红色错误条；成功/恢复后帧省略）。 */
-  lastError?: string
-  totalChapters: number
-  outlineDone: number
-  draftDone: number
-  finalDone: number
-  isolated: number[]
-  /** 活跃章节及当前环节（未完成未隔离，按章号升序，最多 8 条）。 */
-  activeChapters?: Array<{ chapter: number; stage: string }>
-  /** 最近过程事件（新→旧，最多 8 条）：呈现"章纲→审查→写作→审查→终稿"的步骤流转。 */
-  recent?: Array<{ time: string; note: string }>
-  /** 本帧触发的里程碑说明（如「第 3 章终稿完成」）。 */
-  note?: string
-  updatedAt: string
+  /** 稳定唯一 id（= projectId + 全局事件序号），match 据此开独立卡片。 */
+  id: string
+  kind: NovelMilestoneKind
+  /** 步骤文案（如「第 1 章 章纲生成」「第 1 章 终稿完成 · 评分 8」）。 */
+  text: string
+  /** 展示用时间（HH:MM:SS）。 */
+  time: string
 }
 
 /** 会话追加所需的最小面（Agent.session 的结构子集，避免依赖 dsh-agent 包）。 */
 export interface SessionAppender {
-  /** 只读事件快照（用于判定进度卡是否已开，避免重复 start 事件）。 */
+  /** 只读事件快照（用于判定目录卡是否已开，避免重复 start 事件）。 */
   readonly events?: readonly { type: string; data?: unknown }[]
-  append(type: 'novel/progress-start', data: { projectId: string; name: string }): unknown
-  append(type: 'novel/progress', data: NovelProgressEventData): unknown
+  append(type: 'novel/milestone', data: NovelMilestoneEventData): unknown
   append(type: 'novel/story-start', data: { projectId: string; chapter: number; title?: string }): unknown
   append(type: 'novel/story-reset', data: { projectId: string; chapter: number }): unknown
   append(type: 'novel/story-delta', data: { projectId: string; chapter: number; delta: string }): unknown
@@ -59,11 +52,12 @@ const MILESTONE_EVENTS = new Set([
   'pipeline.stage-done',
 ])
 
-/** 各会话已转发过的正文流式领域事件（按会话分组、事件对象引用去重）：
+/** 各会话已转发过的流水线领域事件（按会话分组、事件对象引用去重）：
  *  同一会话先后多个 FEED 命令（如 novel.status 后 novel.resume）各自绑定监听器，
- *  会把同一条 novel.story-* 领域事件各转发一次——start 重复由 session.events 持久守卫
- *  拦截，但 delta/finish 无守卫会正文双写/冗余收束，这里统一按事件对象去重，只落一条。 */
-const forwardedStoryEvents = new WeakMap<SessionAppender, WeakSet<object>>()
+ *  会把同一条 novel.story-* 或 milestone 领域事件各转发一次——story-start 重复由
+ *  session.events 持久守卫兜底，milestone 每条 seq 唯一也需防同对象二次转发
+ *  （同 id 二次 start 会炸会话装配），这里统一按事件对象去重，只落一条。 */
+const forwardedEvents = new WeakMap<SessionAppender, WeakSet<object>>()
 
 const STAGE_LABELS: Record<string, string> = {
   planner: '规划',
@@ -76,10 +70,12 @@ const STAGE_LABELS: Record<string, string> = {
 
 function milestoneNote(event: { type: string; [key: string]: unknown }): string | undefined {
   switch (event.type) {
-    case 'chapter.final':
-      return `第 ${event.chapter} 章终稿完成`
+    case 'chapter.final': {
+      const score = typeof event.score === 'number' ? ` · 评分 ${event.score}` : ''
+      return `第 ${event.chapter} 章 终稿完成${score}`
+    }
     case 'chapter.isolated':
-      return `第 ${event.chapter} 章隔离：${String(event.reason ?? '').slice(0, 80)}`
+      return `第 ${event.chapter} 章 隔离：${String(event.reason ?? '').slice(0, 80)}`
     case 'model.fallback':
       return `模型降级：${String(event.detail ?? event.channel ?? '')}`.slice(0, 100)
     case 'pipeline.completed':
@@ -87,10 +83,10 @@ function milestoneNote(event: { type: string; [key: string]: unknown }): string 
     case 'pipeline.log': {
       const stage = STAGE_LABELS[String(event.stage)] ?? String(event.stage ?? '')
       const chapter = typeof event.chapter === 'number' ? `第 ${event.chapter} 章 ` : ''
-      if (event.result !== 'failed') return `${chapter}▸ ${stage}`
+      if (event.result !== 'failed') return `${chapter}${stage}`
       // 补全类失败透出具体原因（如「（失败重试：人物关系未闭合）」），与 isolated 分支同取 80 字符上限
       const detail = typeof event.detail === 'string' ? event.detail.slice(0, 80) : ''
-      return `${chapter}▸ ${stage}（失败重试${detail ? `：${detail}` : ''}）`
+      return `${chapter}${stage}（失败重试${detail ? `：${detail}` : ''}）`
     }
     case 'pipeline.error':
       return `失败：${String(event.message ?? '').slice(0, 80)}`
@@ -100,7 +96,8 @@ function milestoneNote(event: { type: string; [key: string]: unknown }): string 
       return event.message ? `失败：${String(event.message).slice(0, 80)}` : `项目状态：${status}`
     }
     case 'pipeline.summary':
-      return undefined
+      // run() 结束时的汇总事件：非中止即全书完成（aborted 由 signal.aborted 驱动）
+      return event.aborted === true ? '全书生成中止' : '全书生成完成'
     case 'pipeline.stage-done':
       return `阶段完成：${String(event.phase ?? '') === 'planning' ? '规划' : String(event.phase) === 'outline' ? '章纲' : String(event.phase) === 'write' ? '正文' : String(event.phase)}`
     default:
@@ -108,44 +105,25 @@ function milestoneNote(event: { type: string; [key: string]: unknown }): string 
   }
 }
 
-interface StatusLike {
-  projectId?: string
-  projectStatus?: string
-  stages?: { outline?: { done: number; total: number }; draft?: { done: number; total: number }; final?: { done: number; total: number } }
-  chapters?: Array<{ chapter: number; currentStage?: string; isolated: boolean }>
-}
-
-/** 最近过程事件保留条数（呈现步骤流转，新→旧）。 */
-const RECENT_LIMIT = 8
-
-/** 进度卡事件载荷构造（纯函数）：project/status 已由调用方加载，双快照共用一次产物扫描。 */
-function progressEventDataOf(
-  projectId: string,
-  project: { name: string; totalChapters: number; status: string; lastError?: string },
-  status: StatusLike,
-  note?: string,
-  recent?: NovelProgressEventData['recent'],
-): NovelProgressEventData {
-  const s = status as StatusLike
-  const activeChapters = (s.chapters ?? [])
-    .filter((c) => !c.isolated && c.currentStage !== undefined && c.currentStage !== '已完成' && c.currentStage !== '已隔离')
-    .slice(0, 8)
-    .map((c) => ({ chapter: c.chapter, stage: c.currentStage! }))
-  return {
-    projectId,
-    name: project.name,
-    status: project.status,
-    // 失败帧携带 lastError（成功/恢复帧 project.lastError 已清空，此处 omit 红条自动消失）
-    ...(project.lastError ? { lastError: project.lastError } : {}),
-    totalChapters: project.totalChapters,
-    outlineDone: s.stages?.outline?.done ?? 0,
-    draftDone: s.stages?.draft?.done ?? 0,
-    finalDone: s.stages?.final?.done ?? 0,
-    isolated: (s.chapters ?? []).filter((c) => c.isolated).map((c) => c.chapter),
-    activeChapters,
-    recent,
-    ...(note ? { note } : {}),
-    updatedAt: new Date().toISOString(),
+/** 步骤消息种类：客户端据此选择图标与配色（纯展示，不参与文案）。 */
+function milestoneKind(event: { type: string; message?: unknown; aborted?: unknown }): NovelMilestoneKind {
+  switch (event.type) {
+    case 'chapter.final':
+      return 'done'
+    case 'pipeline.completed':
+      return 'completed'
+    case 'pipeline.summary':
+      return event.aborted === true ? 'status' : 'completed'
+    case 'chapter.isolated':
+      return 'isolated'
+    case 'model.fallback':
+      return 'fallback'
+    case 'pipeline.error':
+      return 'error'
+    case 'project.status':
+      return event.message !== undefined ? 'error' : 'status'
+    default:
+      return 'step'
   }
 }
 
@@ -166,8 +144,7 @@ export interface HostSessionLike {
 
 /** 本插件注册的会话事件类型全集（持久层回放 assertEventsSupported 需全部识别）。 */
 export const NOVEL_SESSION_EVENT_TYPES = [
-  'novel/progress-start',
-  'novel/progress',
+  'novel/milestone',
   'novel/story-start',
   'novel/story-reset',
   'novel/story-delta',
@@ -278,13 +255,11 @@ export function attachProgressFeed(
   session: SessionAppender,
   projectId: string,
 ): () => void {
-  /** 过程时间线（新→旧）：随每帧快照下发，客户端呈现步骤流转。 */
-  let recent: Array<{ time: string; note: string }> = []
-  const appendSnapshot = (data: NovelProgressEventData): void => {
+  const appendMilestone = (data: NovelMilestoneEventData): void => {
     try {
-      session.append('novel/progress', data)
+      session.append('novel/milestone', data)
     } catch {
-      /* 会话已关闭等：进度推送不阻断 */
+      /* 会话已关闭等：里程碑推送不阻断 */
     }
   }
   const appendToc = (data: NovelToc): void => {
@@ -294,12 +269,9 @@ export function attachProgressFeed(
       /* 会话已关闭等：目录推送不阻断 */
     }
   }
-  const push = (note?: string): void => {
-    if (note !== undefined) {
-      recent = [{ time: new Date().toISOString().slice(11, 19), note }, ...recent].slice(0, RECENT_LIMIT)
-    }
-    // 进度卡与目录卡共用同一次产物扫描：loadProject + status（内含 queryProgress）+ pathsOf
-    // 一次到位，buildToc 复用其 ProgressView，避免 queryProgress 全量跑两遍。
+  // 目录卡从落盘产物实时重建（产物即真相）：loadProject + status（内含 queryProgress）+
+  // pathsOf 一次到位，buildToc 复用其 ProgressView，避免 queryProgress 全量跑两遍。
+  const pushToc = (): void => {
     void (async () => {
       const [project, status, paths] = await Promise.all([
         app.projects.loadProject(projectId).catch(() => null),
@@ -307,7 +279,6 @@ export function attachProgressFeed(
         app.pathsOf(projectId).catch(() => null),
       ])
       if (project === null || status === null || paths === null) return
-      appendSnapshot(progressEventDataOf(projectId, project, status, note, recent))
       const toc = await buildToc(paths, project, status).catch(() => null)
       if (toc !== null) appendToc(toc)
     })()
@@ -317,26 +288,8 @@ export function attachProgressFeed(
     void app.projects
       .loadProject(projectId)
       .then((project) => {
-        // 同一 (会话, 项目) 只开一次卡：重复 attach（如 status 查询）仅刷新快照，
-        // 否则同一 Context 收到多个 start 会被对话装配器拒绝。
-        // 正确性依赖 core-session 的同步 append 语义：读 events 快照 + append 位于同一
-        // 同步块（之间无 await），append 同步写日志并重置快照，并发 attach 的第二个绑定
-        // 必然看到首个 append 的 start；若未来 dsh 使 append 异步化或 events 返回独立副本，
-        // 重复 start 会回归并炸掉会话装配（story-start 侧另有按 key 的持久守卫兜底）。
-        const alreadyStarted = (session.events ?? []).some(
-          (e) =>
-            e.type === 'novel/progress-start' &&
-            (e.data as { projectId?: string } | undefined)?.projectId === projectId,
-        )
-        try {
-          if (!alreadyStarted) {
-            session.append('novel/progress-start', { projectId, name: project.name })
-          }
-        } catch {
-          /* 同上 */
-        }
-        // 目录卡开卡守卫与进度卡同构；只查 novel/toc-start（不查 progress-start）——
-        // 旧会话（仅 progress-start、无 toc-start）重载后再 attach 会补开目录卡，行为正确。
+        // 目录卡开卡守卫：同一 (会话, 项目) 只开一次卡，重复 attach（如 status 查询）
+        // 仅刷新目录快照，否则同一 Context 收到多个 start 会被对话装配器拒绝。
         const alreadyTocStarted = (session.events ?? []).some(
           (e) =>
             e.type === 'novel/toc-start' &&
@@ -349,7 +302,7 @@ export function attachProgressFeed(
         } catch {
           /* 会话已关闭等：不阻断 */
         }
-        push()
+        pushToc()
       })
       .catch(() => {})
   }
@@ -432,33 +385,43 @@ export function attachProgressFeed(
   return app.onPipelineEvent((event) => {
     if (!sessionEventTypesReady) return
     if ((event as { projectId?: string }).projectId !== projectId) return
+    // 同一条领域事件被同会话多个监听器各转发一次：按会话分组以事件对象引用去重，
+    // 只落一条（story-start 另有 session.events 持久守卫防跨重启/跨 attach 重复）。
+    let seen = forwardedEvents.get(session)
+    if (seen === undefined) {
+      seen = new WeakSet<object>()
+      forwardedEvents.set(session, seen)
+    }
+    if (seen.has(event)) return
+    seen.add(event)
     if (event.type.startsWith('novel.story-')) {
-      // 同一条领域事件被同会话多个监听器各转发一次：按会话分组以事件对象引用去重，
-      // 只落一条（start 另有 session.events 持久守卫防跨重启/跨 attach 重复）。
-      let seen = forwardedStoryEvents.get(session)
-      if (seen === undefined) {
-        seen = new WeakSet<object>()
-        forwardedStoryEvents.set(session, seen)
-      }
-      if (seen.has(event)) return
-      seen.add(event)
       handleStoryEvent(event as unknown as { type: string; chapter?: number; [key: string]: unknown })
       return
     }
     if (!MILESTONE_EVENTS.has(event.type)) return
-    push(milestoneNote(event))
+    const note = milestoneNote(event)
+    if (note === undefined) return
+    const seq = (event as { seq?: unknown }).seq
+    if (typeof seq !== 'number') return
+    appendMilestone({
+      projectId,
+      id: `${projectId}-${seq}`,
+      kind: milestoneKind(event as { type: string; message?: unknown }),
+      text: note,
+      time: new Date().toISOString().slice(11, 19),
+    })
+    // 目录卡作为进度兜底随里程碑同步刷新（产物即真相，latest-write-wins）
+    pushToc()
   })
 }
 
 declare module '@deepseek-ai/dsh-session/types' {
   interface SessionEventMap {
     /**
-     * 小说进度卡片起始帧：在发起命令的会话上打开一张进度卡（log-only，
-     * 不进模型历史）。与 novel/progress 按 projectId 配对。
+     * 小说步骤消息：每条独立聊天消息（log-only，不进模型历史），
+     * 由客户端里程碑卡片逐条渲染为对话流中的一步。
      */
-    'novel/progress-start': { projectId: string; name: string }
-    /** 小说进度快照（latest-write-wins）：由客户端卡片折叠为实时进度视图。 */
-    'novel/progress': NovelProgressEventData
+    'novel/milestone': NovelMilestoneEventData
     /** 正文流式卡起始帧：第 N 章正文开始逐字流出（log-only，不进模型历史）。 */
     'novel/story-start': { projectId: string; chapter: number; title?: string }
     /** 正文重写清卡帧：regen/重试重写同一章时清空既有卡正文，后续 delta 以新稿重新累积。 */

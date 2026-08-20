@@ -12,7 +12,7 @@ import type { SessionAppender } from '../src/progress-feed'
 /** 记录会话 append：验证进度/正文流式事件是否写入会话日志。 */
 class RecordingSession implements SessionAppender {
   readonly events: Array<{ type: string; data?: unknown }> = []
-  append(type: 'novel/progress-start' | 'novel/progress' | 'novel/story-start' | 'novel/story-reset' | 'novel/story-delta' | 'novel/story-finish' | 'novel/toc-start' | 'novel/toc', data: unknown): unknown {
+  append(type: 'novel/milestone' | 'novel/story-start' | 'novel/story-reset' | 'novel/story-delta' | 'novel/story-finish' | 'novel/toc-start' | 'novel/toc', data: unknown): unknown {
     this.events.push({ type, data })
     return undefined
   }
@@ -137,7 +137,7 @@ describe('plugin entry（真实 dsh 命令体系集成）', () => {
     expect(ctx.commands.find(undefined, 'novel-create')?.recordInput).not.toBe(false)
   })
 
-  it('binds the progress feed BEFORE executing long commands (novel-plan captures live progress snapshots)', async () => {
+  it('binds the progress feed BEFORE executing long commands (novel-plan captures live milestone messages)', async () => {
     // planner 一次流返回合法规划产物，让 planning 阶段真实跑通并 emit pipeline.log / stage-done
     const planningJson = JSON.stringify({
       world: { worldview: '雪夜江湖，十年前灭门旧案笼罩北地边城', themes: ['复仇', '真相'] },
@@ -162,12 +162,12 @@ describe('plugin entry（真实 dsh 命令体系集成）', () => {
     const session = new RecordingSession()
     const result = await runCommandWithSession(ctx, 'novel-plan', `--project ${projectId}`, session)
     expect(result.kind).toBe('success')
-    // 命令执行前已 attach：progress-start 由 bind 在命令期间发出
-    expect(session.events.filter((e) => e.type === 'novel/progress-start')).toHaveLength(1)
-    // planning 阶段 pipeline.log / stage-done 触发多条实时快照：
-    // 若 attach 拖到命令结束后（回归），将只有 bind 初始 1 条，断言失败
-    const snapshots = session.events.filter((e) => e.type === 'novel/progress') as Array<{ data: { projectId: string } }>
-    expect(snapshots.length).toBeGreaterThanOrEqual(2)
-    expect(snapshots[0].data.projectId).toBe(projectId)
+    // 命令执行前已 attach：toc-start 由 bind 在命令期间发出
+    expect(session.events.filter((e) => e.type === 'novel/toc-start')).toHaveLength(1)
+    // planning 阶段 pipeline.log / stage-done 触发多条里程碑消息：
+    // 若 attach 拖到命令结束后（回归），将没有里程碑消息落地，断言失败
+    const milestones = session.events.filter((e) => e.type === 'novel/milestone') as Array<{ data: { projectId: string } }>
+    expect(milestones.length).toBeGreaterThanOrEqual(2)
+    expect(milestones[0].data.projectId).toBe(projectId)
   })
 })

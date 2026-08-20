@@ -18,6 +18,8 @@ export interface DomainEvent extends HostEvent {
   projectId?: string
   chapter?: number
   message?: string
+  /** 全局单调递增序号（emitPipelineEvent 统一分配），供步骤消息生成稳定唯一 id。 */
+  seq?: number
   timestamp: number
   [key: string]: unknown
 }

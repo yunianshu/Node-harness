@@ -108,7 +108,7 @@ describe('novelTocDefinition（目录卡）', () => {
   it('match 将 toc-start 开卡、toc 归为 update，无关类型不命中', () => {
     expect(novelTocDefinition.match(tocEvent('novel/toc-start', { projectId: 'p', name: '测试书' }))).toEqual({ id: 'p', role: 'start' })
     expect(novelTocDefinition.match(tocEvent('novel/toc', TOC as unknown as Record<string, unknown>))).toEqual({ id: 'p', role: 'update' })
-    expect(novelTocDefinition.match(tocEvent('novel/progress', {}))).toBeNull()
+    expect(novelTocDefinition.match(tocEvent('novel/milestone', {}))).toBeNull()
   })
 
   it('start 以 toc-start 开卡并置空快照（后续 toc 帧整体替换）', () => {

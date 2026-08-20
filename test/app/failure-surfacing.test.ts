@@ -15,14 +15,13 @@ import {
   registerNovelSessionEvents,
   resetSessionEventTypesRegistration,
 } from '../../src/progress-feed'
-import type { NovelProgressEventData, SessionAppender } from '../../src/progress-feed'
+import type { NovelMilestoneEventData, SessionAppender } from '../../src/progress-feed'
 import type { ModelGateway } from '../../src/model/gateway'
 
 class RecordingSession implements SessionAppender {
   readonly events: { type: string; data?: unknown }[] = []
 
-  append(type: 'novel/progress-start', data: { projectId: string; name: string }): unknown
-  append(type: 'novel/progress', data: NovelProgressEventData): unknown
+  append(type: 'novel/milestone', data: NovelMilestoneEventData): unknown
   append(type: 'novel/story-start', data: { projectId: string; chapter: number; title?: string }): unknown
   append(type: 'novel/story-reset', data: { projectId: string; chapter: number }): unknown
   append(type: 'novel/story-delta', data: { projectId: string; chapter: number; delta: string }): unknown
@@ -99,7 +98,7 @@ describe('失败原因透出（startProject 自动流水线）', () => {
     expect(typeof planning.timestamp).toBe('string')
   })
 
-  it('失败后进度卡快照携带 lastError（红条数据源）+ recent 时间线含失败原因', async () => {
+  it('失败后里程碑消息携带失败原因（失败：… + 失败重试：…，error kind 红标）', async () => {
     await registerNovelSessionEvents()
     const created = await app.projects.create(
       { name: '失败透出', premise: '刀客为查旧案真相重回故地，雪夜长街，故人重逢。', totalChapters: 1, stylePackId: 'gulong' },
@@ -114,21 +113,20 @@ describe('失败原因透出（startProject 自动流水线）', () => {
       const p = await app.projects.loadProject(projectId)
       return p.status === 'paused' && p.lastError !== undefined
     })
-    // 等待 recordFailure 后显式 emit 的 project.status 事件驱动的最新快照落地
+    // 等待 recordFailure 后显式 emit 的 project.status / pipeline.error 事件驱动的里程碑落地
     await waitFor(async () =>
       (session.events as { type: string; data?: unknown }[]).some(
-        (e) => e.type === 'novel/progress' && (e.data as { lastError?: string } | undefined)?.lastError !== undefined,
+        (e) => e.type === 'novel/milestone' && (e.data as { text?: string } | undefined)?.text?.includes('失败'),
       ),
     )
 
-    const snaps = session.events.filter((e) => e.type === 'novel/progress') as { data?: NovelProgressEventData }[]
-    const failed = snaps[snaps.length - 1].data!
-    expect(failed.status).toBe('paused')
-    expect(failed.lastError).toContain('规划阶段连续失败')
-    // recent 同时呈现带原因的「（失败重试：…）」与兜底「失败：…」note
-    const notes = (failed.recent ?? []).map((r) => r.note)
-    expect(notes.some((n) => n.includes('（失败重试：'))).toBe(true)
-    expect(notes.some((n) => n.includes('失败：规划阶段连续失败'))).toBe(true)
+    const milestones = session.events.filter((e) => e.type === 'novel/milestone') as { data?: NovelMilestoneEventData }[]
+    const texts = milestones.map((m) => m.data!.text)
+    // 同时呈现带原因的「（失败重试：…）」与兜底「失败：…」两条独立消息
+    expect(texts.some((t) => t.includes('（失败重试：'))).toBe(true)
+    expect(texts.some((t) => t.includes('失败：规划阶段连续失败'))).toBe(true)
+    // 失败类里程碑以 error kind 标注（客户端红标）
+    expect(milestones.some((m) => m.data!.kind === 'error')).toBe(true)
     detach()
   })
 })

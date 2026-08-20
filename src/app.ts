@@ -94,6 +94,8 @@ export class NovelHarnessApp {
   private readonly running = new Map<string, AbortController>()
   readonly events: DomainEvent[] = []
   private readonly pipelineListeners = new Set<(event: DomainEvent) => void>()
+  /** 领域事件全局单调序号：步骤消息据此生成稳定唯一 id（跨监听器一致、回放稳定）。 */
+  private eventSeq = 0
 
   /** 订阅流水线领域事件（进度卡片等消费方），返回退订函数。 */
   onPipelineEvent(listener: (event: DomainEvent) => void): () => void {
@@ -104,6 +106,7 @@ export class NovelHarnessApp {
   }
 
   private emitPipelineEvent(event: DomainEvent): void {
+    event.seq = ++this.eventSeq
     this.events.push(event)
     this.webhook.handleEvent(event)
     // pipeline.error 落盘 logs/pipeline-errors.jsonl：不依赖 webhook 配置，故障必留痕。

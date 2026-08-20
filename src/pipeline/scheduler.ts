@@ -732,7 +732,7 @@ export class PipelineScheduler {
           await atomicWriteFile(join(paths.chapters.final, `${chapterFile(chapter)}.txt`), draft)
           status.final = true
           await this.archiveChapter(chapter, draft, outline, matrix, tierMap, locationNames, paths, ctx)
-          this.deps.onEvent?.({ type: 'chapter.final', projectId: ctx.projectId, chapter })
+          this.deps.onEvent?.({ type: 'chapter.final', projectId: ctx.projectId, chapter, score: review.report.score })
           // 正文流式收束：终稿评分入帧，前端消息卡标记完成（resume 直审未开流式的章也补收束）
           this.deps.onEvent?.({ type: 'novel.story-finish', projectId: ctx.projectId, chapter, score: review.report.score })
           return
