@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { AuditLog } from '../../src/storage/audit'
+import { appendJsonl, AuditLog } from '../../src/storage/audit'
 
 describe('audit log', () => {
   it('appends entries with increasing seq and reads them back', async () => {
@@ -49,5 +49,20 @@ describe('audit log', () => {
     expect(entries).toHaveLength(1)
     await log.append('u', 'project.stop')
     expect((await log.readAll()).map((e) => e.seq)).toEqual([1, 2])
+  })
+})
+
+describe('appendJsonl（独立 JSONL 追加，pipeline-errors 等专用日志）', () => {
+  it('自动创建目录并逐行追加 JSON，不读回不计 seq', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'jsonl-'))
+    const file = join(dir, 'nested', 'pipeline-errors.jsonl')
+    await appendJsonl(file, { projectId: 'p1', message: '规划失败' })
+    await appendJsonl(file, { projectId: 'p2' })
+    const text = await readFile(file, 'utf-8')
+    const lines = text.trim().split('\n').filter(Boolean).map((l) => JSON.parse(l))
+    expect(lines).toHaveLength(2)
+    expect(lines[0].projectId).toBe('p1')
+    expect(lines[0].message).toBe('规划失败')
+    expect(lines[1].message).toBeUndefined()
   })
 })

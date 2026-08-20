@@ -14,7 +14,7 @@ import { IsolationLedger } from './pipeline/isolation.js'
 import { ChapterSlotManager } from './pipeline/worker-pool.js'
 import { GuidanceService, GuidanceStage, GuidanceNote } from './guidance/service.js'
 import { RegenOrchestrator, RegenScope } from './guidance/regen-orchestrator.js'
-import { AuditLog } from './storage/audit.js'
+import { appendJsonl, AuditLog } from './storage/audit.js'
 import { chapterFile, ensureProjectLayout, projectPaths } from './storage/layout.js'
 import { fileExists } from './storage/atomic.js'
 import { compile } from './output/compiler.js'
@@ -106,6 +106,11 @@ export class NovelHarnessApp {
   private emitPipelineEvent(event: DomainEvent): void {
     this.events.push(event)
     this.webhook.handleEvent(event)
+    // pipeline.error 落盘 logs/pipeline-errors.jsonl：不依赖 webhook 配置，故障必留痕。
+    // 异步 fire-and-forget 且 .catch 吞错，写盘失败不阻塞流水线、不 reject 到调用方。
+    if (event.type === 'pipeline.error' && event.projectId) {
+      void this.persistPipelineError(event).catch(() => {})
+    }
     for (const listener of this.pipelineListeners) {
       try {
         listener(event)
@@ -113,6 +118,19 @@ export class NovelHarnessApp {
         /* 监听方故障不阻断流水线 */
       }
     }
+  }
+
+  /** pipeline.error 事件写盘：按字段组装（不整对象落盘），message 截断防膨胀。 */
+  private async persistPipelineError(event: DomainEvent): Promise<void> {
+    const paths = await this.pathsOf(String(event.projectId))
+    const entry = {
+      type: event.type,
+      projectId: event.projectId,
+      stage: typeof event.stage === 'string' ? event.stage : 'pipeline',
+      message: typeof event.message === 'string' ? event.message.slice(0, 200) : '',
+      timestamp: new Date().toISOString(),
+    }
+    await appendJsonl(paths.logs.pipelineErrorsLog, entry)
   }
 
   constructor(options: NovelAppOptions = {}) {
@@ -335,7 +353,21 @@ export class NovelHarnessApp {
     const project = await this.projects.start(projectId)
     const controller = new AbortController()
     this.running.set(projectId, controller)
-    void this.scheduler.run(projectId, controller.signal).catch(() => {})
+    void this.scheduler.run(projectId, controller.signal).catch((err) => {
+      // 失败原因透出：scheduler.run 的错误不再静默吞掉，落 project.json 的 lastError 字段，
+      // 并显式发一条 project.status 里程碑事件驱动进度卡 push（卡片读取刚写入的 lastError
+      // 渲染红条）。recordFailure 的 paused 守卫避免与并发 resume 的读改写竞态，整体
+      // try/catch 兜底（fire-and-forget 下写盘/emit 失败不得成为 unhandled rejection）。
+      const message = err instanceof Error ? err.message : String(err)
+      void (async () => {
+        try {
+          await this.projects.recordFailure(projectId, message, 'pipeline')
+          this.emitPipelineEvent({ type: 'project.status', projectId, to: 'paused', message, timestamp: Date.now() })
+        } catch {
+          /* 忽略：失败已由上游 settlePhaseFailure 处理，此处仅兜底透出 */
+        }
+      })()
+    })
     return project
   }
 

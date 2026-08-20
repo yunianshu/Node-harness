@@ -13,6 +13,8 @@ export interface NovelProgressEventData {
   projectId: string
   name: string
   status: string
+  /** 最近一次流水线失败原因（失败帧携带，客户端渲染红色错误条；成功/恢复后帧省略）。 */
+  lastError?: string
   totalChapters: number
   outlineDone: number
   draftDone: number
@@ -53,6 +55,7 @@ const MILESTONE_EVENTS = new Set([
   'pipeline.completed',
   'project.status',
   'pipeline.log',
+  'pipeline.error',
   'pipeline.stage-done',
 ])
 
@@ -84,8 +87,17 @@ function milestoneNote(event: { type: string; [key: string]: unknown }): string 
     case 'pipeline.log': {
       const stage = STAGE_LABELS[String(event.stage)] ?? String(event.stage ?? '')
       const chapter = typeof event.chapter === 'number' ? `第 ${event.chapter} 章 ` : ''
-      const failed = event.result === 'failed' ? '（失败重试）' : ''
-      return `${chapter}▸ ${stage}${failed}`
+      if (event.result !== 'failed') return `${chapter}▸ ${stage}`
+      // 补全类失败透出具体原因（如「（失败重试：人物关系未闭合）」），与 isolated 分支同取 80 字符上限
+      const detail = typeof event.detail === 'string' ? event.detail.slice(0, 80) : ''
+      return `${chapter}▸ ${stage}（失败重试${detail ? `：${detail}` : ''}）`
+    }
+    case 'pipeline.error':
+      return `失败：${String(event.message ?? '').slice(0, 80)}`
+    case 'project.status': {
+      // startProject 失败兜底 emit：message 存在时呈现失败原因，否则回退状态文本
+      const status = String(event.to ?? event.status ?? '')
+      return event.message ? `失败：${String(event.message).slice(0, 80)}` : `项目状态：${status}`
     }
     case 'pipeline.summary':
       return undefined
@@ -109,7 +121,7 @@ const RECENT_LIMIT = 8
 /** 进度卡事件载荷构造（纯函数）：project/status 已由调用方加载，双快照共用一次产物扫描。 */
 function progressEventDataOf(
   projectId: string,
-  project: { name: string; totalChapters: number; status: string },
+  project: { name: string; totalChapters: number; status: string; lastError?: string },
   status: StatusLike,
   note?: string,
   recent?: NovelProgressEventData['recent'],
@@ -123,6 +135,8 @@ function progressEventDataOf(
     projectId,
     name: project.name,
     status: project.status,
+    // 失败帧携带 lastError（成功/恢复帧 project.lastError 已清空，此处 omit 红条自动消失）
+    ...(project.lastError ? { lastError: project.lastError } : {}),
     totalChapters: project.totalChapters,
     outlineDone: s.stages?.outline?.done ?? 0,
     draftDone: s.stages?.draft?.done ?? 0,

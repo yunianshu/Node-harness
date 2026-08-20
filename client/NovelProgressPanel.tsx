@@ -54,6 +54,20 @@ export function NovelProgressPanel({ node }: PanelProps) {
         {d.isolated.length > 0 && <span style={{ color: '#d97706' }}>隔离：第 {d.isolated.join(',')} 章</span>}
       </div>
 
+      {d.lastError !== undefined && d.lastError.length > 0 && (
+        <div style={{
+          marginTop: 6,
+          padding: '4px 8px',
+          borderRadius: 4,
+          background: 'rgba(220,38,38,0.1)',
+          border: '1px solid rgba(220,38,38,0.4)',
+          color: '#dc2626',
+          fontSize: 12,
+        }}>
+          ⚠️ 失败：{d.lastError}
+        </div>
+      )}
+
       {active.length > 0 && (
         <div style={{ marginTop: 8 }}>
           {active.map((c) => (

@@ -297,6 +297,38 @@ describe('NovelProgressFeed（会话进度供给）', () => {
     detach1()
     detach2()
   })
+
+  it('pipeline.log 失败帧携带 detail：recent 文案含「（失败重试：原因）」并截断 80', async () => {
+    await registerNovelSessionEvents()
+    const created = await app.projects.create(
+      { name: '补全原因', premise: '刀客雪夜长街，故人重逢，真相渐近。', totalChapters: 1, stylePackId: 'gulong' },
+      'test',
+    )
+    const session = new RecordingSession()
+    const detach = attachProgressFeed(app, session, created.project.projectId)
+    const emit = (event: unknown): void =>
+      (app as unknown as { emitPipelineEvent(e: unknown): void }).emitPipelineEvent(event)
+
+    const longDetail = '人物关系未闭合；地点缺氛围基调；'.repeat(30) // 远超 80 字符
+    emit({
+      type: 'pipeline.log',
+      projectId: created.project.projectId,
+      stage: 'planner',
+      result: 'failed',
+      errorClass: 'PlannerIncompleteError',
+      detail: longDetail,
+    })
+    await new Promise((r) => setTimeout(r, 300))
+
+    const snaps = session.events.filter((e) => e.type === 'novel/progress') as { data?: NovelProgressEventData }[]
+    const last = snaps[snaps.length - 1].data!
+    const hit = (last.recent ?? []).map((r) => r.note).find((n) => n.includes('（失败重试：'))
+    expect(hit).toBeDefined()
+    expect(hit!).toContain('▸ 规划（失败重试：')
+    // 补全原因合并进文案且截断到 80 字符（与 chapter.isolated 分支同上限；+82 补偿结尾右括号）
+    expect(hit!.length).toBeLessThanOrEqual('▸ 规划（失败重试：'.length + 82)
+    detach()
+  })
 })
 
 describe('宿主 dsh-session 实例解析（根因修复的自动化覆盖）', () => {

@@ -274,9 +274,33 @@ export class ProjectService {
       }
       throw err
     }
-    const updated = { ...config, status: next }
+    const updated = {
+      ...config,
+      status: next,
+      // 重新进入运行/完成态即清除旧错误（resume 重启、complete 收束均代表新一轮尝试开始）；
+      // pause/stop 保留 lastError 供诊断。undefined 经 JSON.stringify 自动丢弃该键。
+      ...(action === 'start' || action === 'resume' || action === 'planning-done' || action === 'complete'
+        ? { lastError: undefined }
+        : {}),
+    }
     await this.saveProject(updated)
     await this.auditFor(projectId, operator, `project.${action}`, { from: config.status, to: next })
+    return updated
+  }
+
+  /**
+   * 记录流水线失败原因（自动流水线失败后的 paused 回滚态落 lastError）。
+   * 守卫 status==='paused'：锁已释放后若用户抢先 resume，本项目已重新运行，
+   * 不应再被陈旧错误覆盖（读改写竞态规避）；相同 message 幂等跳过（settlePhaseFailure
+   * 与 startProject catch 的双重调用只写一次）。
+   */
+  async recordFailure(projectId: string, message: string, operator = 'cli'): Promise<ProjectConfig | null> {
+    const config = await this.loadProject(projectId)
+    if (config.status !== 'paused') return null
+    if (config.lastError === message) return null
+    const updated = { ...config, lastError: message }
+    await this.saveProject(updated)
+    await this.auditFor(projectId, operator, 'project.failure', { message })
     return updated
   }
 

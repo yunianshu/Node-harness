@@ -91,6 +91,59 @@ describe('project lifecycle', () => {
   })
 })
 
+describe('recordFailure（失败原因透出）', () => {
+  it('paused 项目写入 lastError + 审计 entry', async () => {
+    const { project } = await service.create({ name: '风暴', premise, totalChapters: 30 })
+    await service.start(project.projectId)
+    await service.pause(project.projectId)
+    const updated = await service.recordFailure(project.projectId, '规划阶段连续失败：人物关系未闭合')
+    expect(updated!.lastError).toBe('规划阶段连续失败：人物关系未闭合')
+    expect((await service.loadProject(project.projectId)).lastError).toBe('规划阶段连续失败：人物关系未闭合')
+    const audit = await readFile(join(root, 'novels', project.projectId, 'logs', 'audit.jsonl'), 'utf-8')
+    expect(audit).toContain('project.failure')
+    expect(audit).toContain('人物关系未闭合')
+  })
+
+  it('相同 message 幂等跳过（settlePhaseFailure 与 startProject catch 双调用只写一次）', async () => {
+    const { project } = await service.create({ name: '风暴', premise, totalChapters: 30 })
+    await service.start(project.projectId)
+    await service.pause(project.projectId)
+    await service.recordFailure(project.projectId, '同一错误')
+    const again = await service.recordFailure(project.projectId, '同一错误')
+    expect(again).toBeNull() // 未发生写入（幂等跳过）
+    expect((await service.loadProject(project.projectId)).lastError).toBe('同一错误')
+    const audit = await readFile(join(root, 'novels', project.projectId, 'logs', 'audit.jsonl'), 'utf-8')
+    expect(audit.split('project.failure')).toHaveLength(2) // 恰好一条
+  })
+
+  it('非 paused 项目（已 resume 运行中）不写，避免陈旧错误覆盖新运行', async () => {
+    const { project } = await service.create({ name: '风暴', premise, totalChapters: 30 })
+    await service.start(project.projectId) // planning（运行态）
+    const updated = await service.recordFailure(project.projectId, '旧错误')
+    expect(updated).toBeNull()
+    expect((await service.loadProject(project.projectId)).lastError).toBeUndefined()
+  })
+
+  it('start/resume/planning-done/complete 清除 lastError；pause/stop 保留', async () => {
+    const { project } = await service.create({ name: '风暴', premise, totalChapters: 30 })
+    await service.start(project.projectId) // planning
+    await service.pause(project.projectId) // paused
+    await service.recordFailure(project.projectId, '规划失败')
+
+    // resume 清除
+    await service.resume(project.projectId)
+    expect((await service.loadProject(project.projectId)).lastError).toBeUndefined()
+
+    // 再次失败保留
+    await service.pause(project.projectId)
+    await service.recordFailure(project.projectId, 'again')
+    expect((await service.loadProject(project.projectId)).lastError).toBe('again')
+    // stop（aborted）保留供诊断
+    await service.stop(project.projectId)
+    expect((await service.loadProject(project.projectId)).lastError).toBe('again')
+  })
+})
+
 describe('mutex lock', () => {
   it('second concurrent start is rejected with ALREADY_RUNNING', async () => {
     const { project } = await service.create({ name: '风暴', premise, totalChapters: 30 })

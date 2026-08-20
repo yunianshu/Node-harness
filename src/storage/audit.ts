@@ -77,3 +77,12 @@ export class AuditLog {
     this.cache = null
   }
 }
+
+/**
+ * 追加一行 JSON 到指定 JSONL 文件（自动创建父目录）。
+ * pipeline-errors 等专用日志复用此写盘模式；不做 readAll/seq 计数（区别于 AuditLog）。
+ */
+export async function appendJsonl(file: string, entry: unknown): Promise<void> {
+  await mkdir(dirname(file), { recursive: true })
+  await appendFile(file, `${JSON.stringify(entry)}\n`, 'utf-8')
+}

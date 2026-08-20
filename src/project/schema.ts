@@ -124,6 +124,8 @@ export const ProjectConfigSchema = z.object({
   retry: RetryPolicySchema.default({}),
   bindings: z.array(ModelBindingSchema).default([]),
   status: ProjectStatusSchema.default('pending'),
+  /** 最近一次流水线失败原因（自动流水线失败后落盘，resume/start 时清除）。 */
+  lastError: z.string().optional(),
   webhookUrl: z.string().default(''),
   createdAt: z.string(),
   updatedAt: z.string(),

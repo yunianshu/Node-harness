@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { invokeRetryOnTruncation, StageContext } from '../../src/pipeline/stages/stage'
+import { invokeRetryOnTruncation, Stage, StageContext } from '../../src/pipeline/stages/stage'
 import { WriterStage, WriterInput } from '../../src/pipeline/stages/writer'
 import { ChapterOutlineSchema } from '../../src/pipeline/schemas'
 import { StylePackSchema } from '../../src/quality/style-pack-loader'
@@ -99,5 +99,54 @@ describe('WriterStage（正文截断守卫）', () => {
     const stage = new WriterStage()
     await expect(stage.execute(writerInput, ctxWithGateway(invoke as unknown as ModelGateway['invoke']))).rejects.toThrow(/token 预算截断/)
     expect(invoke).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('Stage.execute 补全原因提取（detail）', () => {
+  const baseCtx = (log: (e: unknown) => void): StageContext => ({
+    projectId: 'p',
+    gateway: {
+      setBindings: () => {},
+      channelStatus: () => [],
+      invoke: async () => ({ content: '', finishReason: 'stop' as const, usage: null, raw: {} }),
+      invokeStream: async () => ({ content: '', finishReason: 'stop' as const, usage: null, raw: {} }),
+    } as unknown as ModelGateway,
+    log,
+  })
+
+  class ThrowingStage extends Stage<unknown, unknown> {
+    constructor(private readonly err: unknown) {
+      super('planner')
+    }
+    protected async run(): Promise<unknown> {
+      throw this.err
+    }
+  }
+
+  it('带 problems 数组的错误：detail 合并写入 failed 日志', async () => {
+    const logged: Array<Record<string, unknown>> = []
+    const err = new Error('x') as Error & { problems?: string[] }
+    err.problems = ['人物关系未闭合', '地点缺氛围基调']
+    await expect(new ThrowingStage(err).execute(null, baseCtx((e) => logged.push(e as Record<string, unknown>)))).rejects.toBe(err)
+    expect(logged[0].result).toBe('failed')
+    expect(logged[0].errorClass).toBe('Error')
+    expect(logged[0].detail).toBe('人物关系未闭合；地点缺氛围基调')
+  })
+
+  it('无 problems 的错误：detail 缺省', async () => {
+    const logged: Array<Record<string, unknown>> = []
+    await expect(
+      new ThrowingStage(new Error('普通错误')).execute(null, baseCtx((e) => logged.push(e as Record<string, unknown>))),
+    ).rejects.toThrow('普通错误')
+    expect(logged[0].result).toBe('failed')
+    expect(logged[0].detail).toBeUndefined()
+  })
+
+  it('problems 非字符串数组时不上 detail（结构化守卫，防异常载荷泄漏）', async () => {
+    const logged: Array<Record<string, unknown>> = []
+    const err = new Error('x') as Error & { problems?: unknown }
+    err.problems = [42, 'str']
+    await expect(new ThrowingStage(err).execute(null, baseCtx((e) => logged.push(e as Record<string, unknown>)))).rejects.toBe(err)
+    expect(logged[0].detail).toBeUndefined()
   })
 })

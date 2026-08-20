@@ -39,6 +39,7 @@ export interface ProjectPaths {
     root: string
     pipelineLog: string
     auditLog: string
+    pipelineErrorsLog: string
     rawResponsesDir: string
   }
   reports: {
@@ -106,6 +107,7 @@ export function projectPaths(dataRoot: string, projectId: string): ProjectPaths 
       root: logsRoot,
       pipelineLog: join(logsRoot, 'pipeline.jsonl'),
       auditLog: join(logsRoot, 'audit.jsonl'),
+      pipelineErrorsLog: join(logsRoot, 'pipeline-errors.jsonl'),
       rawResponsesDir: join(logsRoot, 'raw_responses'),
     },
     reports: {
