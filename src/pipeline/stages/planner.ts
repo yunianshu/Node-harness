@@ -22,6 +22,7 @@ export class PlannerStage extends Stage<PlannerInput, PlanningArtifacts> {
   protected async run(input: PlannerInput, ctx: StageContext): Promise<PlanningArtifacts> {
     const prompt = this.buildPrompt(input)
     const response = await ctx.gateway.invoke('planner', prompt, { projectId: ctx.projectId })
+    this.lastReasoning = response.reasoning ?? null
     const parsed = extractJsonLoose(response.content) as Record<string, unknown>
     const artifacts = this.coerce(parsed)
     const validation = validatePlanningArtifacts(artifacts)

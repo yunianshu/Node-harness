@@ -6,7 +6,7 @@ import { FakeHost } from '../../src/host/dsh-adapter'
 import type { HostLlmDelta, HostLlmRequest } from '../../src/host/types'
 import { ChannelManager } from '../../src/model/fallback'
 import { ModelExhaustedError } from '../../src/model/errors'
-import { ModelGateway, parseDshModel, stripDshReasoning, stripDshReasoningDelta } from '../../src/model/gateway'
+import { extractDshReasoning, ModelGateway, parseDshModel, stripDshReasoning, stripDshReasoningDelta } from '../../src/model/gateway'
 import { DSL_PROVIDER, ProviderRegistry } from '../../src/model/registry'
 import { GlobalRateLimiter } from '../../src/model/rate-limiter'
 import { defaultDshBindings } from '../../src/project/service'
@@ -158,6 +158,28 @@ describe('dsh 模型执行器（gateway dsh 分支）', () => {
     const res = await gateway.invoke('writer', { user: '写' }, { projectId: 'p1' })
     expect(res.content).toBe('我是答案。')
   })
+
+  it('invoke 聚合内联 [思考] 推理块为 reasoning 字段（content 剥离后保留 reasoning）', async () => {
+    const dsh = fakeDshLlm([[{ text: '[思考] 拆[思考]  。我是答案。', finish: 'stop' }]])
+    const { gateway } = await setup(dsh)
+    gateway.setBindings([dshBinding])
+    const res = await gateway.invoke('writer', { user: '写' }, { projectId: 'p1' })
+    expect(res.content).toBe('我是答案。')
+    expect(res.reasoning).toBe('拆')
+  })
+
+  it('invoke 聚合独立 reasoning-delta 为 reasoning 字段（底座独立思考流）', async () => {
+    const dsh = fakeDshLlm([[
+      { reasoning: '第一步思考' },
+      { reasoning: '第二步思考' },
+      { text: '答案', finish: 'stop' },
+    ]])
+    const { gateway } = await setup(dsh)
+    gateway.setBindings([dshBinding])
+    const res = await gateway.invoke('writer', { user: '写' }, { projectId: 'p1' })
+    expect(res.content).toBe('答案')
+    expect(res.reasoning).toBe('第一步思考第二步思考')
+  })
 })
 
 describe('stripDshReasoning（推理块剥离）', () => {
@@ -183,6 +205,33 @@ describe('stripDshReasoning（推理块剥离）', () => {
     expect(stripDshReasoningDelta('<think>推理</think>正文')).toBe('正文')
     expect(stripDshReasoningDelta('<think>未闭合')).toBeNull()
     expect(stripDshReasoningDelta('纯正文，无思考块。')).toBe('纯正文，无思考块。')
+  })
+})
+
+describe('extractDshReasoning（推理块提取）', () => {
+  it('提取 GLM [思考] 内联推理块（与 stripDshReasoning 严格互补）', () => {
+    const raw = '[思考] 1[思考] .[思考]  [思考]  **[思考] 拆[思考] 解[思考] 用户[思考] 请求[思考] 。我是一个在庞大文本和代码数据集上训练的大型语言模型，能够理解和生成类人文本。'
+    const reasoning = extractDshReasoning(raw)
+    // 推理 token 逐字还原（[思考] 标记剥离、末段答案不计入）
+    expect(reasoning).toContain('拆')
+    expect(reasoning).toContain('解')
+    expect(reasoning).toContain('用户')
+    expect(reasoning).toContain('请求')
+    expect(reasoning).not.toContain('我是一个')
+    expect(reasoning).not.toContain('[思考]')
+    // 互补：strip 后只剩答案，extract 只留推理
+    expect(stripDshReasoning(raw)).toContain('我是一个')
+    expect(stripDshReasoning(raw)).not.toContain('拆')
+  })
+
+  it('提取通用 <think> 块（含未闭合尾巴）', () => {
+    expect(extractDshReasoning('<think>推理过程</think>正文')).toBe('推理过程')
+    expect(extractDshReasoning('<think>未闭合尾巴')).toBe('未闭合尾巴')
+  })
+
+  it('无推理标记返回空串', () => {
+    expect(extractDshReasoning('纯正文，无思考块。')).toBe('')
+    expect(extractDshReasoning('')).toBe('')
   })
 })
 

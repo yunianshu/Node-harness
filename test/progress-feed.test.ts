@@ -322,6 +322,65 @@ describe('NovelProgressFeed（会话进度供给）', () => {
     expect(hit!.length).toBeLessThanOrEqual('规划（失败重试：'.length + 82)
     detach()
   })
+
+  it('pipeline.log 带 reasoning → milestone 载荷透传思考内容（空思考不放字段）', async () => {
+    await registerNovelSessionEvents()
+    const created = await app.projects.create(
+      { name: '思考透传', premise: '刀客雪夜长街，故人重逢，真相渐近。', totalChapters: 1, stylePackId: 'gulong' },
+      'test',
+    )
+    const session = new RecordingSession()
+    const detach = attachProgressFeed(app, session, created.project.projectId)
+    const emit = (event: unknown): void =>
+      (app as unknown as { emitPipelineEvent(e: unknown): void }).emitPipelineEvent(event)
+
+    const projectId = created.project.projectId
+    const reasoning = '这一章要埋下旧案的线索，让沈孤鸿在长街偶遇白老板。'
+    emit({ type: 'pipeline.log', projectId, stage: 'outliner', chapter: 1, result: 'ok', reasoning })
+    // 无 reasoning 的步骤不放字段（如降级模型无思考）
+    emit({ type: 'pipeline.log', projectId, stage: 'planner', result: 'ok' })
+    await new Promise((r) => setTimeout(r, 300))
+
+    const milestones = session.events.filter((e) => e.type === 'novel/milestone') as { data?: NovelMilestoneEventData }[]
+    const withReasoning = milestones.find((m) => m.data?.text === '第 1 章 章纲生成')
+    expect(withReasoning).toBeDefined()
+    expect(withReasoning!.data!.reasoning).toBe(reasoning)
+    const withoutReasoning = milestones.find((m) => m.data?.text === '规划')
+    expect(withoutReasoning).toBeDefined()
+    expect(withoutReasoning!.data!.reasoning).toBeUndefined()
+    detach()
+  })
+
+  it('pipeline.log 超长 reasoning → milestone 载荷截断到 2000 字符并加截断标记', async () => {
+    await registerNovelSessionEvents()
+    const created = await app.projects.create(
+      { name: '思考截断', premise: '刀客雪夜长街，故人重逢，真相渐近。', totalChapters: 1, stylePackId: 'gulong' },
+      'test',
+    )
+    const session = new RecordingSession()
+    const detach = attachProgressFeed(app, session, created.project.projectId)
+    const emit = (event: unknown): void =>
+      (app as unknown as { emitPipelineEvent(e: unknown): void }).emitPipelineEvent(event)
+
+    emit({
+      type: 'pipeline.log',
+      projectId: created.project.projectId,
+      stage: 'writer',
+      chapter: 1,
+      result: 'ok',
+      reasoning: '思'.repeat(3000),
+    })
+    await new Promise((r) => setTimeout(r, 300))
+
+    const milestones = session.events.filter((e) => e.type === 'novel/milestone') as { data?: NovelMilestoneEventData }[]
+    const hit = milestones.find((m) => m.data?.text === '第 1 章 正文写作')
+    expect(hit).toBeDefined()
+    const reasoning = hit!.data!.reasoning!
+    expect(reasoning.startsWith('思'.repeat(2000))).toBe(true)
+    expect(reasoning.endsWith('…（思考过长，已截断）')).toBe(true)
+    expect(reasoning.length).toBe(2000 + '…（思考过长，已截断）'.length)
+    detach()
+  })
 })
 
 describe('宿主 dsh-session 实例解析（根因修复的自动化覆盖）', () => {

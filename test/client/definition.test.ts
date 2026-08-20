@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  novelMilestoneDefinition,
   novelStoryDefinition,
   novelTocDefinition,
   type NovelStoryState,
@@ -151,5 +152,36 @@ describe('novelTocDefinition（目录卡）', () => {
     expect(node).not.toBeNull()
     expect(node!.kind).toBe('novel-toc')
     expect(node!.data).toBe(TOC)
+  })
+})
+
+// ---- novel/milestone 里程碑卡 ----
+
+function milestoneEvent(type: string, data: Record<string, unknown>): Parameters<typeof novelMilestoneDefinition.match>[0] {
+  return { type, seq: 1, time: 1, data } as Parameters<typeof novelMilestoneDefinition.match>[0]
+}
+
+describe('novelMilestoneDefinition（里程碑消息卡）', () => {
+  it('match 将 novel/milestone 归为唯一 id 的 start 角色', () => {
+    const m = novelMilestoneDefinition.match(
+      milestoneEvent('novel/milestone', { projectId: 'p', id: 'p-3', kind: 'step', text: '第 1 章 章纲生成', time: '06:00:14' }),
+    )
+    expect(m).toEqual({ id: 'p-3', role: 'start' })
+  })
+
+  it('start 透传完整载荷（含 reasoning 思考内容，不裁剪）', () => {
+    const start = novelMilestoneDefinition.start
+    const data = {
+      projectId: 'p',
+      id: 'p-3',
+      kind: 'step',
+      text: '第 1 章 章纲生成',
+      time: '06:00:14',
+      reasoning: '这一章要埋下旧案的线索。',
+    }
+    const ctx = {} as unknown as Parameters<typeof start>[0]
+    const reader = {} as unknown as Parameters<typeof start>[2]
+    const startMatch = { event: milestoneEvent('novel/milestone', data) } as unknown as Parameters<typeof start>[1]
+    expect(start(ctx, startMatch, reader)).toEqual(data)
   })
 })

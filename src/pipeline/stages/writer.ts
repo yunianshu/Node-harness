@@ -65,6 +65,7 @@ export class WriterStage extends Stage<WriterInput, string> {
     if (response.finishReason === 'length') {
       throw new Error('写作者输出被 token 预算截断（finish_reason=length），重试后仍不完整——建议上调 writer 角色 maxOutputTokens')
     }
+    this.lastReasoning = response.reasoning ?? null
     const text = response.content.trim()
     if (text.length === 0) throw new Error('写作者返回空正文')
     return text

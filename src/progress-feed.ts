@@ -21,6 +21,8 @@ export interface NovelMilestoneEventData {
   text: string
   /** 展示用时间（HH:MM:SS）。 */
   time: string
+  /** AI 模型推理内容（reasoning/think 段），客户端渲染为折叠思考块；为空不显示。 */
+  reasoning?: string
 }
 
 /** 会话追加所需的最小面（Agent.session 的结构子集，避免依赖 dsh-agent 包）。 */
@@ -403,12 +405,20 @@ export function attachProgressFeed(
     if (note === undefined) return
     const seq = (event as { seq?: unknown }).seq
     if (typeof seq !== 'number') return
+    // 推理内容截断到 2000 字符（会话事件 log-only、不进模型历史，但避免撑爆会话日志/回放渲染）
+    const rawReasoning = (event as { reasoning?: unknown }).reasoning
+    let reasoning: string | undefined
+    if (typeof rawReasoning === 'string' && rawReasoning.trim().length > 0) {
+      const trimmed = rawReasoning.trim()
+      reasoning = trimmed.length > 2000 ? `${trimmed.slice(0, 2000)}…（思考过长，已截断）` : trimmed
+    }
     appendMilestone({
       projectId,
       id: `${projectId}-${seq}`,
       kind: milestoneKind(event as { type: string; message?: unknown }),
       text: note,
       time: new Date().toISOString().slice(11, 19),
+      ...(reasoning !== undefined ? { reasoning } : {}),
     })
     // 目录卡作为进度兜底随里程碑同步刷新（产物即真相，latest-write-wins）
     pushToc()

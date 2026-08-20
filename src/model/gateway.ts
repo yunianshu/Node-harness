@@ -47,6 +47,29 @@ export function stripDshReasoning(content: string): string {
 }
 
 /**
+ * 提取 dsh 推理模型输出中的思考段（与 stripDshReasoning 严格互补：后者剥离掉的
+ * 内容 = 本函数提取的内容）。收集 <think> 块（含未闭合尾巴）与内联 [思考] 块，
+ * 供折叠思考块展示；无推理标记返回空串。多来源用换行拼接，调用方自行截断。
+ */
+export function extractDshReasoning(content: string): string {
+  if (!content) return ''
+  const parts: string[] = []
+  let rest = content.replace(/<think>([\s\S]*?)<\/think>/g, (_m, g: string) => {
+    parts.push(g)
+    return ''
+  })
+  rest = rest.replace(/<think>([\s\S]*)$/, (_m, g: string) => {
+    parts.push(g)
+    return ''
+  })
+  const last = rest.lastIndexOf('[思考]')
+  if (last >= 0) {
+    parts.push(rest.slice(0, last).replace(/\[思考\]/g, ''))
+  }
+  return parts.map((p) => p.trim()).filter((p) => p.length > 0).join('\n')
+}
+
+/**
  * 增量版推理剥离：返回「当前确定是真答案」的文本段；推理块未闭合返回 null（调用方不输出）。
  * zai-coding-cn 推理流把每个推理 token 包裹为 `[思考]tok[思考]`，真答案在最后一个闭合
  * `[思考]` 之后。剥掉已配对块后若仍有未配对标记，说明推理仍在进行，等待配对闭合。
@@ -275,6 +298,7 @@ export class ModelGateway {
     onDelta?: (text: string) => void,
   ): Promise<ChatResponse> {
     let buffer = ''
+    let reasoningBuffer = ''
     let emitted = 0
     let finish: 'stop' | 'length' | 'error' | 'aborted' = 'stop'
     let errorMsg = ''
@@ -287,6 +311,7 @@ export class ModelGateway {
       maxTokens: request.params?.maxOutputTokens ?? binding.maxOutputTokens,
     })) {
       if (delta.text) buffer += delta.text
+      if (delta.reasoning) reasoningBuffer += delta.reasoning
       if (delta.finish) finish = delta.finish
       if (delta.error) errorMsg = delta.error
       if (onDelta) {
@@ -305,7 +330,14 @@ export class ModelGateway {
     }
     // 聚合终值用 stripDshReasoning（容忍未闭合尾巴），与增量累积一致（流结束时推理必闭合）。
     const content = stripDshReasoning(buffer)
-    return { content, finishReason: finish === 'length' ? 'length' : 'stop', usage: null, raw: null }
+    const reasoning = (reasoningBuffer + extractDshReasoning(buffer)).trim()
+    return {
+      content,
+      finishReason: finish === 'length' ? 'length' : 'stop',
+      usage: null,
+      raw: null,
+      ...(reasoning ? { reasoning } : {}),
+    }
   }
 
   channelStatus(): ChannelStatusSnapshot[] {

@@ -24,6 +24,7 @@ export class OutlinerStage extends Stage<OutlinePromptInput, ChapterOutline> {
       projectId: ctx.projectId,
       chapter: input.chapter,
     })
+    this.lastReasoning = response.reasoning ?? null
     const parsed = extractJsonLoose(response.content) as Record<string, unknown>
     const schemaCheck = ChapterOutlineSchema.safeParse({ ...parsed, chapter: (parsed as { chapter?: number })?.chapter ?? input.chapter })
     if (!schemaCheck.success) {
@@ -36,7 +37,7 @@ export class OutlinerStage extends Stage<OutlinePromptInput, ChapterOutline> {
     const outline = structure.value
     const mode: 'first' | 'directed' | 'full-regen' = input.mode
     outline.rewriteTrace = [
-      ...((input.previousOutline?.rewriteTrace ?? []).filter((t) => mode === 'directed')),
+      ...((input.previousOutline?.rewriteTrace ?? []).filter(() => mode === 'directed')),
       { mode, round: (input.previousOutline?.rewriteTrace.length ?? 0) + 1, at: new Date().toISOString() },
     ]
     return outline

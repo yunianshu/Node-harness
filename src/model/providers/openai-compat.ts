@@ -32,6 +32,8 @@ export interface ChatRequest {
 
 export interface ChatResponse {
   content: string
+  /** 模型推理内容（reasoning/think 段）。非推理模型或已剥离时为空。 */
+  reasoning?: string
   finishReason: string | null
   usage: { promptTokens: number; completionTokens: number } | null
   raw: unknown

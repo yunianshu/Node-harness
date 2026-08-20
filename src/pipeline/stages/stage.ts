@@ -21,6 +21,8 @@ export interface StageLogEntry {
   errorClass?: string
   /** 补全类失败的具体原因（规划/章纲校验的 problems 数组合并），透传到进度卡「失败重试：…」文案。 */
   detail?: string
+  /** 本次阶段模型推理内容（reasoning/think 段），透传到里程碑消息的折叠思考块。 */
+  reasoning?: string
 }
 
 export interface StageContext {
@@ -33,10 +35,14 @@ export interface StageContext {
 }
 
 export abstract class Stage<TInput, TOutput> {
+  /** 本次 run 产出的模型推理内容（各 stage 在拿到 response 后写入，execute 附带进 log）。 */
+  protected lastReasoning: string | null = null
+
   constructor(readonly stageName: string) {}
 
   async execute(input: TInput, ctx: StageContext): Promise<TOutput> {
     const started = Date.now()
+    this.lastReasoning = null
     try {
       const output = await this.run(input, ctx)
       ctx.log({
@@ -44,6 +50,7 @@ export abstract class Stage<TInput, TOutput> {
         stage: this.stageName,
         durationMs: Date.now() - started,
         result: 'ok',
+        ...(this.lastReasoning ? { reasoning: this.lastReasoning } : {}),
       })
       return output
     } catch (err) {
@@ -62,6 +69,7 @@ export abstract class Stage<TInput, TOutput> {
         result: 'failed',
         errorClass: err instanceof Error ? err.constructor.name : String(err),
         ...(detail !== undefined ? { detail } : {}),
+        ...(this.lastReasoning ? { reasoning: this.lastReasoning } : {}),
       })
       throw err
     }

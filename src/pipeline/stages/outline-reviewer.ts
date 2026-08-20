@@ -51,6 +51,7 @@ export class OutlineReviewerStage extends Stage<OutlineReviewInput, OutlineRevie
         chapter: input.chapter,
       }),
     )
+    this.lastReasoning = response.reasoning ?? null
     const parsed = extractJsonLoose(response.content) as Record<string, unknown>
     const report = ReviewReportSchema.parse({
       ...parsed,
