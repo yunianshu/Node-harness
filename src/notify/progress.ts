@@ -122,6 +122,8 @@ export interface NovelTocEntry {
 /** 会话内小说目录卡快照（latest-write-wins，产物即真相，不落 toc.json）。 */
 export interface NovelToc {
   projectId: string
+  /** 产物根目录绝对路径（<dataRoot>/novels/<projectId>/），供会话卡片呈现文件保存位置。 */
+  projectDir: string
   name: string
   status: string
   totalChapters: number
@@ -211,6 +213,7 @@ export async function buildToc(
 
   return {
     projectId: progress.projectId,
+    projectDir: paths.root,
     name: project.name,
     status: project.status,
     totalChapters: progress.totalChapters,

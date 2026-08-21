@@ -23,6 +23,8 @@ export interface NovelMilestoneEventData {
   time: string
   /** AI 模型推理内容（reasoning/think 段），客户端渲染为折叠思考块；为空不显示。 */
   reasoning?: string
+  /** 产物根目录绝对路径（仅全书完成/项目创建等关键里程碑携带，供会话卡片呈现文件位置）。 */
+  artifactDir?: string
 }
 
 /** 会话追加所需的最小面（Agent.session 的结构子集，避免依赖 dsh-agent 包）。 */
@@ -257,6 +259,10 @@ export function attachProgressFeed(
   session: SessionAppender,
   projectId: string,
 ): () => void {
+  // 预取产物根路径（微任务级完成），供全书完成里程碑携带 artifactDir，
+  // 让会话卡片能呈现文件保存位置；未就绪时降级不带（不影响里程碑本身）。
+  let cachedProjectDir: string | undefined
+  void app.pathsOf(projectId).then((p) => { cachedProjectDir = p.root }).catch(() => {})
   const appendMilestone = (data: NovelMilestoneEventData): void => {
     try {
       session.append('novel/milestone', data)
@@ -412,6 +418,8 @@ export function attachProgressFeed(
       const trimmed = rawReasoning.trim()
       reasoning = trimmed.length > 2000 ? `${trimmed.slice(0, 2000)}…（思考过长，已截断）` : trimmed
     }
+    // 全书完成/项目状态事件携带产物根路径，供会话卡片呈现文件保存位置
+    const isCompletion = event.type === 'pipeline.completed' || (event.type === 'pipeline.summary' && event.aborted !== true)
     appendMilestone({
       projectId,
       id: `${projectId}-${seq}`,
@@ -419,6 +427,7 @@ export function attachProgressFeed(
       text: note,
       time: new Date().toISOString().slice(11, 19),
       ...(reasoning !== undefined ? { reasoning } : {}),
+      ...(isCompletion && cachedProjectDir !== undefined ? { artifactDir: cachedProjectDir } : {}),
     })
     // 目录卡作为进度兜底随里程碑同步刷新（产物即真相，latest-write-wins）
     pushToc()

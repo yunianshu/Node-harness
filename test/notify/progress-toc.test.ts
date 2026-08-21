@@ -48,6 +48,7 @@ describe('buildToc（产物重建目录卡快照）', () => {
     const toc = await buildToc(paths, { name: '测试书', totalChapters: 2, status: 'generating' }, progress)
 
     expect(toc.projectId).toBe('proj-x')
+    expect(toc.projectDir).toBe(paths.root)
     expect(toc.name).toBe('测试书')
     expect(toc.status).toBe('generating')
     expect(toc.totalChapters).toBe(2)

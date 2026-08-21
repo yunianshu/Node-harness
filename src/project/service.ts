@@ -53,6 +53,8 @@ export interface ProjectServiceDeps {
 }
 
 export interface CreateResult {
+  /** 产物根目录绝对路径（<dataRoot>/novels/<projectId>/），命令返回时供会话呈现文件保存位置。 */
+  projectDir: string
   project: ProjectConfig
   warnings: string[]
 }
@@ -177,7 +179,7 @@ export class ProjectService {
     await atomicWriteFile(paths.premiseTxt, clean.premise)
     await this.auditFor(projectId, operator, 'project.create', { name: clean.name, totalChapters: clean.totalChapters, stylePackId })
 
-    return { project: config, warnings }
+    return { projectDir: paths.root, project: config, warnings }
   }
 
   async loadProject(projectId: string): Promise<ProjectConfig> {

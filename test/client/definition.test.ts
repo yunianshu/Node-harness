@@ -92,6 +92,7 @@ function tocEvent(type: string, data: Record<string, unknown>): Parameters<typeo
 
 const TOC: NovelToc = {
   projectId: 'p',
+  projectDir: '/tmp/novels/p',
   name: '测试书',
   status: 'generating',
   totalChapters: 2,
